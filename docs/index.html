@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>bashtab — Git Bash 전용 탭 터미널</title>
+  <meta name="description" content="Git Bash를 탭으로. 진짜 mintty를 그대로 담은 300KB짜리 Windows 탭 터미널." />
+  <meta property="og:title" content="bashtab — Git Bash 전용 탭 터미널" />
+  <meta property="og:description" content="Git Bash를 탭으로. 진짜 mintty를 그대로 담은 300KB짜리 Windows 탭 터미널." />
+  <link rel="icon" href="icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0d0d0f;
+      --bg-2: #141417;
+      --line: #26262b;
+      --fg: #ececf1;
+      --dim: #9a9aa5;
+      --accent: #f14e32;
+      --accent-2: #ff7a5c;
+      --green: #23d18b;
+      --magenta: #d670d6;
+      --yellow: #e5c07b;
+      --cyan: #29b8db;
+      --mono: 'JetBrains Mono', Consolas, 'D2Coding', monospace;
+      --sans: 'Pretendard', -apple-system, 'Segoe UI', 'Malgun Gothic', sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--sans);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; }
+    .wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+
+    /* nav */
+    nav { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; }
+    .brand { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-weight: 600; font-size: 18px; text-decoration: none; }
+    .brand img { width: 26px; height: 26px; }
+    nav .links { display: flex; gap: 20px; font-size: 14px; color: var(--dim); }
+    nav .links a { text-decoration: none; }
+    nav .links a:hover { color: var(--fg); }
+
+    /* hero */
+    .hero { text-align: center; padding: 64px 0 40px; position: relative; }
+    .hero::before {
+      content: ''; position: absolute; inset: -40px 0 auto; height: 420px; z-index: -1;
+      background: radial-gradient(600px 260px at 50% 30%, rgba(241, 78, 50, 0.18), transparent 70%);
+    }
+    .pill {
+      display: inline-flex; gap: 8px; align-items: center;
+      padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px;
+      font-size: 13px; color: var(--dim); background: var(--bg-2);
+    }
+    .pill b { color: var(--accent-2); font-weight: 600; }
+    h1 { font-size: clamp(36px, 7vw, 64px); line-height: 1.1; margin: 20px 0 16px; letter-spacing: -0.02em; }
+    h1 .tab { font-family: var(--mono); color: var(--accent); }
+    .lead { font-size: clamp(16px, 2.4vw, 19px); color: var(--dim); max-width: 620px; margin: 0 auto 32px; }
+    .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 10px;
+      padding: 14px 24px; border-radius: 10px; font-weight: 600; font-size: 16px;
+      text-decoration: none; transition: transform .15s, background .15s, border-color .15s;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 8px 30px rgba(241, 78, 50, .35); }
+    .btn-primary:hover { background: var(--accent-2); }
+    .btn-ghost { border: 1px solid var(--line); background: var(--bg-2); }
+    .btn-ghost:hover { border-color: #3a3a42; }
+    .btn svg { width: 18px; height: 18px; }
+    .meta { margin-top: 14px; font-size: 13px; color: var(--dim); }
+    .meta a { color: var(--fg); }
+
+    /* mock window */
+    .window {
+      margin: 56px auto 0; max-width: 900px; text-align: left;
+      border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+      background: #000; box-shadow: 0 30px 80px rgba(0, 0, 0, .6);
+    }
+    .titlebar { display: flex; align-items: center; height: 34px; padding: 0 12px; background: #202020; font-size: 12px; color: var(--dim); gap: 8px; }
+    .titlebar img { width: 16px; height: 16px; }
+    .titlebar .ctrls { margin-left: auto; display: flex; gap: 22px; color: #bbb; font-size: 13px; }
+    .tabbar { display: flex; height: 34px; background: #202020; overflow: hidden; }
+    .tabbar button {
+      all: unset; cursor: pointer; display: flex; align-items: center; gap: 8px;
+      width: 180px; max-width: 36%; padding: 0 10px 0 14px; font-size: 12px; color: #969696;
+      border-top: 2px solid transparent; position: relative; box-sizing: border-box;
+    }
+    .tabbar button:not(.on)::after { content: ''; position: absolute; right: 0; top: 9px; bottom: 9px; width: 1px; background: #3c3c3c; }
+    .tabbar button:hover:not(.on) { background: #303030; }
+    .tabbar button.on { background: #0c0c0c; color: #f0f0f0; border-top-color: var(--accent); }
+    .tabbar .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .tabbar .x { opacity: .7; }
+    .tabbar .plus { width: 36px; justify-content: center; padding: 0; color: #f0f0f0; font-size: 15px; }
+    .tabbar .plus::after { display: none; }
+    .term {
+      font-family: var(--mono); font-size: 13.5px; line-height: 1.55; color: #ccc;
+      padding: 14px 16px 22px; min-height: 300px; white-space: pre-wrap; word-break: break-all;
+    }
+    .g { color: var(--green); } .m { color: var(--magenta); } .y { color: var(--yellow); } .c { color: var(--cyan); } .r { color: #f14c4c; } .d { color: #777; }
+    .cursor { display: inline-block; width: 8px; height: 1.1em; vertical-align: -2px; background: #ccc; animation: blink 1s steps(1) infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* sections */
+    section { padding: 88px 0 0; }
+    h2 { font-size: clamp(26px, 4vw, 34px); margin: 0 0 12px; letter-spacing: -0.01em; }
+    .sub { color: var(--dim); margin: 0 0 36px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; }
+    .card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 22px; }
+    .card .num { font-family: var(--mono); font-size: 28px; font-weight: 600; color: var(--accent-2); line-height: 1.2; }
+    .card h3 { margin: 10px 0 6px; font-size: 17px; }
+    .card p { margin: 0; color: var(--dim); font-size: 14.5px; }
+
+    .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .bar-row { margin: 18px 0 6px; display: flex; justify-content: space-between; font-size: 14px; }
+    .bar-row span:last-child { font-family: var(--mono); color: var(--dim); }
+    .bar { height: 10px; border-radius: 99px; background: #1f1f24; overflow: hidden; }
+    .bar i { display: block; height: 100%; border-radius: 99px; }
+    .bar .slow { background: #4a4a55; width: 100%; }
+    .bar .fast { background: var(--accent); width: 5%; min-width: 10px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 15px; }
+    td { padding: 12px 4px; border-bottom: 1px solid var(--line); }
+    td:last-child { color: var(--dim); }
+    kbd {
+      font-family: var(--mono); font-size: 12.5px; padding: 3px 8px; border-radius: 6px;
+      background: #1c1c21; border: 1px solid #33333b; border-bottom-width: 2px; white-space: nowrap;
+    }
+
+    .steps { counter-reset: s; display: grid; gap: 14px; }
+    .step { display: flex; gap: 16px; align-items: flex-start; }
+    .step::before {
+      counter-increment: s; content: counter(s); flex: none;
+      width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+      background: var(--bg-2); border: 1px solid var(--line); font-family: var(--mono); font-size: 14px; color: var(--accent-2);
+    }
+    .step p { margin: 3px 0 0; }
+    .step p small { color: var(--dim); }
+    code { font-family: var(--mono); font-size: .9em; background: #1c1c21; padding: 2px 6px; border-radius: 5px; }
+
+    .final { text-align: center; padding: 96px 0 0; }
+    footer { margin-top: 96px; padding: 28px 0 40px; border-top: 1px solid var(--line); color: var(--dim); font-size: 13px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+
+    @media (max-width: 640px) {
+      nav .links { gap: 14px; }
+      .compare { grid-template-columns: 1fr; }
+      .titlebar .ctrls { display: none; }
+      .tabbar button { width: auto; flex: 1; max-width: none; }
+      .term { font-size: 12px; min-height: 240px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a class="brand" href="#"><img src="icon.png" alt="" />bashtab</a>
+      <div class="links">
+        <a href="#features">특징</a>
+        <a href="#shortcuts">단축키</a>
+        <a href="https://github.com/Geol2/bashtab">GitHub</a>
+      </div>
+    </nav>
+
+    <header class="hero">
+      <span class="pill"><b>v0.2.0</b> Windows · 무설치 · 300KB</span>
+      <h1>Git Bash를 <span class="tab">[탭]</span>으로.</h1>
+      <p class="lead">평소 쓰던 Git Bash(mintty) 창을 그대로 탭 안에 담았습니다. 새 터미널을 배울 필요 없이, 창 열 개 대신 탭 열 개.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/Geol2/bashtab/releases/latest/download/bashtab.exe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16"/></svg>
+          bashtab.exe 다운로드
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/Geol2/bashtab">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+          소스 보기
+        </a>
+      </div>
+      <p class="meta">필요한 것: <a href="https://gitforwindows.org/">Git for Windows</a> · 64비트 Windows 10/11</p>
+
+      <div class="window" aria-label="bashtab 실행 화면 예시">
+        <div class="titlebar"><img src="icon.png" alt="" /><span id="wtitle">~/projects/web</span><span class="ctrls"><span>—</span><span>☐</span><span>✕</span></span></div>
+        <div class="tabbar" role="tablist">
+          <button class="on" data-i="0"><span class="t">~/projects/web</span><span class="x">×</span></button>
+          <button data-i="1"><span class="t">~/projects/api</span><span class="x">×</span></button>
+          <button data-i="2"><span class="t">~</span><span class="x">×</span></button>
+          <button class="plus" title="새 탭">+</button>
+        </div>
+        <div class="term" id="term"></div>
+      </div>
+    </header>
+
+    <section id="features">
+      <h2>왜 bashtab?</h2>
+      <p class="sub">터미널을 새로 만든 게 아니라, 원래 Git Bash에 탭만 달았습니다.</p>
+      <div class="grid">
+        <div class="card">
+          <div class="num">100%</div>
+          <h3>진짜 mintty</h3>
+          <p>탭마다 Git for Windows의 mintty가 그대로 돌아갑니다. 글꼴·색·<code>~/.minttyrc</code>·복사/붙여넣기 모두 평소 그대로.</p>
+        </div>
+        <div class="card">
+          <div class="num">~300KB</div>
+          <h3>exe 하나로 끝</h3>
+          <p>Rust + Win32로 만든 단일 실행 파일. 설치도, 런타임도, Electron도 없습니다.</p>
+        </div>
+        <div class="card">
+          <div class="num">38s → 2s</div>
+          <h3>빠른 시작</h3>
+          <p>보안 프로그램 때문에 Git Bash가 느린 PC에서도 바로 뜹니다. 프롬프트·git 브랜치 표시·자동완성은 그대로.</p>
+        </div>
+        <div class="card">
+          <div class="num">Ctrl+Tab</div>
+          <h3>익숙한 탭 조작</h3>
+          <p>브라우저처럼 새 탭, 닫기, 전환, Alt+숫자 이동. 휠클릭으로 닫고 더블클릭으로 엽니다.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>얼마나 빨라지나요?</h2>
+      <p class="sub">은행·보안 프로그램이 깔린 PC에서는 프로그램 하나 띄우는 데 1초씩 걸리기도 합니다. 기본 Git Bash는 시작할 때 그런 프로그램을 십여 개 실행합니다.</p>
+      <div class="compare">
+        <div class="card">
+          <h3>셸 시작 시간 (실측)</h3>
+          <div class="bar-row"><span>기본 Git Bash 로그인</span><span>약 38초</span></div>
+          <div class="bar"><i class="slow"></i></div>
+          <div class="bar-row"><span>bashtab</span><span>약 1~2초</span></div>
+          <div class="bar"><i class="fast"></i></div>
+        </div>
+        <div class="card">
+          <h3>어떻게?</h3>
+          <p>bashtab은 <code>/etc/profile</code> 대신, 외부 프로그램을 하나도 실행하지 않는 시작 스크립트를 씁니다. git 브랜치는 <code>.git/HEAD</code>를 bash 내장 기능만으로 읽고, 자동완성은 처음 Tab을 누를 때 불러옵니다. <code>~/.bashrc</code>는 그대로 읽습니다.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="shortcuts">
+      <h2>단축키</h2>
+      <p class="sub">bashtab 창이 활성화되어 있을 때만 동작합니다.</p>
+      <table>
+        <tr><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd></td><td>새 탭 (또는 <kbd>+</kbd>, 탭 바 빈 곳 더블클릭)</td></tr>
+        <tr><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>W</kbd></td><td>탭 닫기 (또는 휠클릭, ×)</td></tr>
+        <tr><td><kbd>Ctrl</kbd> + <kbd>Tab</kbd></td><td>다음 탭</td></tr>
+        <tr><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Tab</kbd></td><td>이전 탭</td></tr>
+        <tr><td><kbd>Alt</kbd> + <kbd>1</kbd>~<kbd>9</kbd></td><td>N번째 탭 (9 = 마지막)</td></tr>
+        <tr><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd> / <kbd>V</kbd></td><td>복사 / 붙여넣기</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>시작하기</h2>
+      <p class="sub">1분이면 됩니다.</p>
+      <div class="steps">
+        <div class="step"><p><a href="https://gitforwindows.org/">Git for Windows</a>를 설치합니다.<br /><small>이미 Git Bash를 쓰고 있다면 건너뛰세요.</small></p></div>
+        <div class="step"><p><a href="https://github.com/Geol2/bashtab/releases/latest/download/bashtab.exe">bashtab.exe</a>를 받아 원하는 폴더에 둡니다.<br /><small>서명되지 않은 exe라 처음 실행할 때 SmartScreen 경고가 뜨면 “추가 정보 → 실행”을 누르세요.</small></p></div>
+        <div class="step"><p>실행하고 작업 표시줄에 고정하면 끝.</p></div>
+      </div>
+    </section>
+
+    <div class="final">
+      <h2>창 대신 탭으로.</h2>
+      <p class="sub">무료 · 오픈 소스</p>
+      <a class="btn btn-primary" href="https://github.com/Geol2/bashtab/releases/latest/download/bashtab.exe">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16"/></svg>
+        bashtab.exe 다운로드
+      </a>
+    </div>
+
+    <footer>
+      <span>bashtab · <a href="https://github.com/Geol2/bashtab">github.com/Geol2/bashtab</a></span>
+      <span>Git 아이콘 © Git for Windows. bashtab은 Git for Windows 프로젝트와 관련이 없습니다.</span>
+    </footer>
+  </div>
+
+  <script>
+    const P = (dir) => `\n<span class="g">user@PC</span> <span class="m">MINGW64</span> <span class="y">${dir}</span>`;
+    const screens = [
+      {
+        title: '~/projects/web',
+        html: `${P('~/projects/web')}<span class="c"> (main)</span>\n$ git status\nOn branch main\nChanges not staged for commit:\n        <span class="r">modified:   src/App.tsx</span>\n        <span class="r">modified:   src/styles.css</span>\n${P('~/projects/web')}<span class="c"> (main)</span>\n$ npm run dev\n\n  <span class="g">VITE</span> ready in 412 ms\n  ➜  Local:   <span class="c">http://localhost:5173/</span>\n`,
+      },
+      {
+        title: '~/projects/api',
+        html: `${P('~/projects/api')}<span class="c"> (feature/login)</span>\n$ git log --oneline -3\n<span class="y">a1c9e42</span> Add login endpoint\n<span class="y">7f3b210</span> Hash passwords with argon2\n<span class="y">5d02c8e</span> Set up project\n${P('~/projects/api')}<span class="c"> (feature/login)</span>\n$ <span class="cursor"></span>`,
+      },
+      {
+        title: '~',
+        html: `${P('~')}\n$ ls\n<span class="c">Desktop/</span>  <span class="c">Documents/</span>  <span class="c">Downloads/</span>  <span class="c">projects/</span>\n${P('~')}\n$ <span class="cursor"></span>`,
+      },
+    ];
+    screens[0].html += `${P('~/projects/web')}<span class="c"> (main)</span>\n$ <span class="cursor"></span>`;
+    const term = document.getElementById('term');
+    const title = document.getElementById('wtitle');
+    const tabs = document.querySelectorAll('.tabbar button[data-i]');
+    function show(i) {
+      tabs.forEach((b) => b.classList.toggle('on', +b.dataset.i === i));
+      term.innerHTML = screens[i].html.replace(/^\n/, '');
+      title.textContent = screens[i].title;
+    }
+    tabs.forEach((b) => b.addEventListener('click', () => show(+b.dataset.i)));
+    show(0);
+  </script>
+</body>
+</html>
