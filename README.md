@@ -1,36 +1,41 @@
 # bashtab
 
-Git Bash 전용 탭 터미널 (Windows). Electron + xterm.js + node-pty.
+Git Bash 전용 탭 터미널 (Windows).
+
+Git for Windows에 들어 있는 **진짜 mintty 창**을 탭 안에 그대로 끼워 넣습니다.
+터미널을 새로 구현하지 않기 때문에 글꼴·색·`~/.minttyrc` 설정이 평소 Git Bash와 똑같고,
+exe 하나(약 300KB)에 런타임도 필요 없습니다.
 
 ## 특징
 
-- Git Bash만 띄우는 탭 터미널
+- 탭마다 실제 mintty + bash 프로세스 (Win32 `SetParent`로 임베드)
 - 빠른 시작: `/etc/profile` 대신 외부 프로세스를 하나도 띄우지 않는 [`fast-rc.sh`](fast-rc.sh) 사용
-  - 백신/보안 프로그램 때문에 프로세스 생성이 느린 PC에서 수십 초 → 1초 이내
+  - 백신/보안 프로그램 때문에 프로세스 생성이 느린 PC에서 수십 초 → 1~2초
   - Git Bash와 같은 프롬프트(git 브랜치 표시 포함), git 자동완성(첫 Tab에 로드), `~/.bashrc` 유지
+- 다크 탭 바, 고해상도(DPI) 대응
 
 ## 단축키
 
 | 키 | 동작 |
 |---|---|
-| Ctrl+Shift+T / `+` | 새 탭 |
+| Ctrl+Shift+T / `+` / 탭 바 빈 곳 더블클릭 | 새 탭 |
 | Ctrl+Shift+W / 휠클릭 / × | 탭 닫기 |
 | Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 탭 |
 | Alt+1~9 | N번째 탭 (9 = 마지막) |
-| Ctrl+Shift+C / Ctrl+V | 복사 / 붙여넣기 |
-| 우클릭 | 선택 있으면 복사, 없으면 붙여넣기 |
+| Ctrl+Shift+C / Ctrl+Shift+V | 복사 / 붙여넣기 (mintty) |
 
-## 실행 / 빌드
+## 설치
 
-Git for Windows가 기본 경로(`C:\Program Files\Git`)에 설치되어 있어야 합니다.
+[Git for Windows](https://gitforwindows.org/)가 설치되어 있어야 합니다.
+[Releases](https://github.com/Geol2/bashtab/releases)에서 `bashtab.exe`를 받아 실행하면 끝입니다.
+
+## 빌드
 
 ```bash
-npm install
-npm start        # 개발 실행
-npm run dist     # release/win-unpacked/Git Bash Tabs.exe 생성
+cargo build --release   # target/release/bashtab.exe
 ```
 
-`npm run dist`가 winCodeSign 압축 해제 중 심볼릭 링크 오류로 실패하면, `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\` 안의 `.7z`를 `darwin` 폴더를 제외하고 `winCodeSign-2.6.0` 폴더로 직접 풀어주면 됩니다.
+`BASHTAB_LOG=1` 환경 변수를 주고 실행하면 `%LOCALAPPDATA%\bashtab\debug.log`에 디버그 로그를 남깁니다.
 
 ## 아이콘
 
