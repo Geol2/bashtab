@@ -1,4 +1,4 @@
-# Git Bash Tabs
+# bashtab
 
 Git Bash 전용 탭 터미널 (Windows). Electron + xterm.js + node-pty.
 
