@@ -9,6 +9,9 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
 ## 특징
 
 - 탭마다 실제 mintty + bash 프로세스 (Win32 `SetParent`로 임베드)
+- **WSL 탭**: `+` 옆 `▾` 메뉴에서 설치된 WSL 배포판(Ubuntu 등)을 골라 같은 창에서 열기
+  - 탭 앞 점 색으로 구분: 주황 = Git Bash, 보라 = WSL
+  - WSL이 오류로 시작에 실패하면 탭을 남겨 오류 메시지를 보여줌
 - 빠른 시작: `/etc/profile` 대신 외부 프로세스를 하나도 띄우지 않는 [`fast-rc.sh`](fast-rc.sh) 사용
   - 백신/보안 프로그램 때문에 프로세스 생성이 느린 PC에서 수십 초 → 1~2초
   - Git Bash와 같은 프롬프트(git 브랜치 표시 포함), git 자동완성(첫 Tab에 로드), `~/.bashrc` 유지
@@ -18,7 +21,9 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
 
 | 키 | 동작 |
 |---|---|
-| Ctrl+Shift+T / `+` / 탭 바 빈 곳 더블클릭 | 새 탭 |
+| Ctrl+Shift+T / `+` / 탭 바 빈 곳 더블클릭 | 새 Git Bash 탭 |
+| Ctrl+Shift+L | 새 WSL 탭 (기본 배포판) |
+| `▾` / `+` 우클릭 | 프로필 선택 메뉴 (Git Bash / WSL 배포판) |
 | Ctrl+Shift+W / 휠클릭 / × | 탭 닫기 |
 | Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 탭 |
 | Alt+1~9 | N번째 탭 (9 = 마지막) |

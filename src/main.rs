@@ -4,6 +4,7 @@
 //! Each tab is a real mintty process whose window is re-parented into ours.
 
 use std::mem::{size_of, zeroed};
+use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::ptr::{null, null_mut};
@@ -26,6 +27,9 @@ const HK_NEW: i32 = 1;
 const HK_CLOSE: i32 = 2;
 const HK_NEXT: i32 = 3;
 const HK_PREV: i32 = 4;
+const HK_NEW_WSL: i32 = 5;
+const MENU_GIT: usize = 1;
+const MENU_WSL: usize = 100; // MENU_WSL + distro index
 const HK_TAB: i32 = 10; // HK_TAB + 1..=9
 const WM_MOUSELEAVE: u32 = 0x02A3; // not exported by windows-sys
 
@@ -41,8 +45,25 @@ const C_ACCENT: u32 = rgb(241, 78, 50);
 const C_TEXT: u32 = rgb(240, 240, 240);
 const C_DIM: u32 = rgb(150, 150, 150);
 const C_TERM_BG: u32 = rgb(0, 0, 0);
+const C_WSL: u32 = rgb(170, 110, 230);
+
+#[derive(Clone, PartialEq)]
+enum Profile {
+    GitBash,
+    Wsl(String), // distribution name
+}
+
+impl Profile {
+    fn label(&self) -> &str {
+        match self {
+            Profile::GitBash => "Git Bash",
+            Profile::Wsl(d) => d,
+        }
+    }
+}
 
 struct Tab {
+    profile: Profile,
     child: Child,
     hwnd: HWND, // null until mintty's window shows up
     title: String,
@@ -55,6 +76,7 @@ enum Hit {
     Tab(usize),
     Close(usize),
     Plus,
+    Menu,
 }
 
 struct App {
@@ -63,6 +85,8 @@ struct App {
     active: usize,
     mintty: String,
     icon: String,
+    wsl: String,
+    distros: Vec<String>, // default distribution first
     rc: String,
     home: String,
     dpi: u32,
@@ -86,25 +110,55 @@ fn scale(v: i32) -> i32 {
     v * app().dpi as i32 / 96
 }
 
-fn git_dir() -> String {
+fn reg_string(key: HKEY, sub: &str, val: &str) -> Option<String> {
+    let mut buf = [0u16; 520];
+    let mut len = (buf.len() * 2) as u32;
+    let sub = wide(sub);
+    let val = wide(val);
+    let ok = unsafe {
+        RegGetValueW(key, sub.as_ptr(), val.as_ptr(), RRF_RT_REG_SZ, null_mut(), buf.as_mut_ptr() as _, &mut len)
+    } == ERROR_SUCCESS;
+    ok.then(|| {
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        String::from_utf16_lossy(&buf[..end])
+    })
+}
+
+/// Installed WSL distributions (default first), read from the registry
+/// so no wsl.exe process is needed.
+fn wsl_distros() -> Vec<String> {
+    let mut out = Vec::new();
     unsafe {
-        let mut buf = [0u16; 520];
-        let mut len = (buf.len() * 2) as u32;
-        let key = wide("SOFTWARE\\GitForWindows");
-        let val = wide("InstallPath");
-        if RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            key.as_ptr(),
-            val.as_ptr(),
-            RRF_RT_REG_SZ,
-            null_mut(),
-            buf.as_mut_ptr() as _,
-            &mut len,
-        ) == ERROR_SUCCESS
-        {
-            let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-            return String::from_utf16_lossy(&buf[..end]);
+        let base = wide(r"Software\Microsoft\Windows\CurrentVersion\Lxss");
+        let mut key: HKEY = null_mut();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, base.as_ptr(), 0, KEY_READ, &mut key) != ERROR_SUCCESS {
+            return out;
         }
+        let default = reg_string(key, "", "DefaultDistribution").unwrap_or_default();
+        for i in 0.. {
+            let mut name = [0u16; 128];
+            let mut len = name.len() as u32;
+            if RegEnumKeyExW(key, i, name.as_mut_ptr(), &mut len, null(), null_mut(), null_mut(), null_mut())
+                != ERROR_SUCCESS
+            {
+                break;
+            }
+            let sub = String::from_utf16_lossy(&name[..len as usize]);
+            match reg_string(key, &sub, "DistributionName") {
+                Some(d) if d.starts_with("docker-desktop") => {}
+                Some(d) if sub.eq_ignore_ascii_case(&default) => out.insert(0, d),
+                Some(d) => out.push(d),
+                None => {}
+            }
+        }
+        RegCloseKey(key);
+    }
+    out
+}
+
+fn git_dir() -> String {
+    if let Some(p) = reg_string(HKEY_LOCAL_MACHINE, "SOFTWARE\\GitForWindows", "InstallPath") {
+        return p;
     }
     for p in [r"C:\Program Files\Git", r"C:\Program Files (x86)\Git"] {
         if Path::new(p).join(r"usr\bin\mintty.exe").exists() {
@@ -148,9 +202,13 @@ fn plus_w() -> i32 {
     scale(36)
 }
 
+fn menu_w() -> i32 {
+    scale(22)
+}
+
 fn tab_w() -> i32 {
     let n = app().tabs.len().max(1) as i32;
-    ((client_rect().right - plus_w()) / n).clamp(scale(60), scale(200))
+    ((client_rect().right - plus_w() - menu_w()) / n).clamp(scale(60), scale(200))
 }
 
 fn tab_rect(i: usize) -> RECT {
@@ -170,6 +228,11 @@ fn plus_rect() -> RECT {
     RECT { left: x, top: 0, right: x + plus_w(), bottom: bar_h() }
 }
 
+fn menu_rect() -> RECT {
+    let x = plus_rect().right;
+    RECT { left: x, top: 0, right: x + menu_w(), bottom: bar_h() }
+}
+
 fn inside(r: &RECT, x: i32, y: i32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
@@ -187,31 +250,37 @@ fn hit(x: i32, y: i32) -> Hit {
     if inside(&plus_rect(), x, y) {
         return Hit::Plus;
     }
+    if inside(&menu_rect(), x, y) {
+        return Hit::Menu;
+    }
     Hit::None
 }
 
 // ---- tabs -----------------------------------------------------------------
 
-fn spawn_tab() {
+fn spawn_tab(profile: Profile) {
     let a = app();
-    let res = Command::new(&a.mintty)
-        .args([
-            "--nodaemon",
-            "-w", "hide",
-            "-B", "void",
-            "-o", "SwitchShortcuts=no",
-            "-o", "CtrlShiftShortcuts=yes",
-            "-i", &a.icon,
-            "/usr/bin/bash", "--noprofile", "--rcfile", &a.rc, "-i",
-        ])
-        .current_dir(&a.home)
-        .env("MSYSTEM", "MINGW64")
-        .env("CHERE_INVOKING", "1")
-        .spawn();
-    match res {
+    let mut cmd = Command::new(&a.mintty);
+    cmd.args(["--nodaemon", "-w", "hide", "-B", "void", "-o", "SwitchShortcuts=no", "-o", "CtrlShiftShortcuts=yes"])
+        .args(["-t", profile.label()])
+        .current_dir(&a.home);
+    match &profile {
+        Profile::GitBash => {
+            cmd.args(["-i", &a.icon, "/usr/bin/bash", "--noprofile", "--rcfile", &a.rc, "-i"])
+                .env("MSYSTEM", "MINGW64")
+                .env("CHERE_INVOKING", "1");
+        }
+        Profile::Wsl(distro) => {
+            // -h error: keep the tab open to show why WSL failed to start.
+            // "~" is quoted so mintty's cygwin command-line globbing leaves it alone.
+            cmd.args(["-h", "error", "-i", &a.wsl, &a.wsl, "-d", distro, "--cd"]).raw_arg("\"~\"");
+        }
+    }
+    match cmd.spawn() {
         Ok(child) => {
-            dlog(&format!("spawned pid {}", child.id()));
-            a.tabs.push(Tab { child, hwnd: null_mut(), title: "Git Bash".into(), started: Instant::now() });
+            dlog(&format!("spawned pid {} ({})", child.id(), profile.label()));
+            let title = profile.label().to_string();
+            a.tabs.push(Tab { profile, child, hwnd: null_mut(), title, started: Instant::now() });
             a.active = a.tabs.len() - 1;
             layout();
             refresh();
@@ -309,6 +378,44 @@ fn activate(i: usize) {
     layout();
     focus_active();
     refresh();
+}
+
+fn spawn_default_wsl() {
+    let a = app();
+    a.distros = wsl_distros();
+    match a.distros.first().cloned() {
+        Some(d) => spawn_tab(Profile::Wsl(d)),
+        None => message_box("설치된 WSL 배포판이 없습니다.\n`wsl --install`로 설치할 수 있습니다."),
+    }
+}
+
+/// Profile picker shown under the ▾ button.
+fn show_menu() {
+    let a = app();
+    a.distros = wsl_distros();
+    unsafe {
+        let m = CreatePopupMenu();
+        AppendMenuW(m, MF_STRING, MENU_GIT, wide("Git Bash\tCtrl+Shift+T").as_ptr());
+        if !a.distros.is_empty() {
+            AppendMenuW(m, MF_SEPARATOR, 0, null());
+        }
+        for (i, d) in a.distros.iter().enumerate() {
+            let label = if i == 0 { format!("WSL: {d}\tCtrl+Shift+L") } else { format!("WSL: {d}") };
+            AppendMenuW(m, MF_STRING, MENU_WSL + i, wide(&label).as_ptr());
+        }
+        let r = menu_rect();
+        let mut pt = POINT { x: r.left, y: r.bottom };
+        ClientToScreen(a.main, &mut pt);
+        let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, a.main, null()) as usize;
+        DestroyMenu(m);
+        if cmd == MENU_GIT {
+            spawn_tab(Profile::GitBash);
+        } else if cmd >= MENU_WSL {
+            if let Some(d) = a.distros.get(cmd - MENU_WSL).cloned() {
+                spawn_tab(Profile::Wsl(d));
+            }
+        }
+    }
 }
 
 fn cycle(delta: isize) {
@@ -461,8 +568,20 @@ unsafe fn paint(hwnd: HWND) {
         if a.hover == Hit::Close(i) {
             fill(mem, &cr, C_CLOSE_HOVER);
         }
-        let title = if t.hwnd.is_null() { "시작 중…" } else if t.title.is_empty() { "Git Bash" } else { &t.title };
-        let tr = RECT { left: r.left + scale(12), right: cr.left - scale(4), ..r };
+        let title = if t.hwnd.is_null() { "시작 중…" } else if t.title.is_empty() { t.profile.label() } else { &t.title };
+        // profile dot: Git Bash orange, WSL purple
+        let dot = scale(6);
+        let cy = (r.top + r.bottom) / 2;
+        let dx = r.left + scale(12);
+        let dot_color = if t.profile == Profile::GitBash { C_ACCENT } else { C_WSL };
+        let brush = CreateSolidBrush(dot_color);
+        let old_brush = SelectObject(mem, brush as _);
+        let old_pen = SelectObject(mem, GetStockObject(NULL_PEN));
+        Ellipse(mem, dx, cy - dot / 2, dx + dot + 1, cy + dot / 2 + 1);
+        SelectObject(mem, old_pen);
+        SelectObject(mem, old_brush);
+        DeleteObject(brush as _);
+        let tr = RECT { left: dx + dot + scale(8), right: cr.left - scale(4), ..r };
         text(mem, title, &tr, if active { C_TEXT } else { C_DIM }, DT_LEFT | DT_END_ELLIPSIS | one_line);
         text(mem, "×", &cr, if active { C_TEXT } else { C_DIM }, DT_CENTER | one_line);
     }
@@ -472,6 +591,21 @@ unsafe fn paint(hwnd: HWND) {
         fill(mem, &pr, C_HOVER);
     }
     text(mem, "+", &pr, C_TEXT, DT_CENTER | one_line);
+
+    // ▾ profile menu button, drawn as a small triangle
+    let mr = menu_rect();
+    if a.hover == Hit::Menu {
+        fill(mem, &mr, C_HOVER);
+    }
+    let (mx, my, s) = ((mr.left + mr.right) / 2, (mr.top + mr.bottom) / 2, scale(4));
+    let tri = [POINT { x: mx - s, y: my - s / 2 }, POINT { x: mx + s, y: my - s / 2 }, POINT { x: mx, y: my + s / 2 + 1 }];
+    let brush = CreateSolidBrush(C_DIM);
+    let old_brush = SelectObject(mem, brush as _);
+    let old_pen = SelectObject(mem, GetStockObject(NULL_PEN));
+    Polygon(mem, tri.as_ptr(), 3);
+    SelectObject(mem, old_pen);
+    SelectObject(mem, old_brush);
+    DeleteObject(brush as _);
 
     BitBlt(hdc, 0, 0, rc.right, bh, mem, 0, 0, SRCCOPY);
     SelectObject(mem, old_font);
@@ -498,6 +632,7 @@ fn set_hotkeys(on: bool) {
     unsafe {
         if on {
             RegisterHotKey(h, HK_NEW, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'T' as u32);
+            RegisterHotKey(h, HK_NEW_WSL, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'L' as u32);
             RegisterHotKey(h, HK_CLOSE, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'W' as u32);
             RegisterHotKey(h, HK_NEXT, MOD_CONTROL, VK_TAB as u32);
             RegisterHotKey(h, HK_PREV, MOD_CONTROL | MOD_SHIFT, VK_TAB as u32);
@@ -505,7 +640,7 @@ fn set_hotkeys(on: bool) {
                 RegisterHotKey(h, HK_TAB + d, MOD_ALT | MOD_NOREPEAT, '0' as u32 + d as u32);
             }
         } else {
-            for id in [HK_NEW, HK_CLOSE, HK_NEXT, HK_PREV] {
+            for id in [HK_NEW, HK_NEW_WSL, HK_CLOSE, HK_NEXT, HK_PREV] {
                 UnregisterHotKey(h, id);
             }
             for d in 1..=9 {
@@ -519,7 +654,8 @@ fn on_hotkey(id: i32) {
     dlog(&format!("hotkey {id}"));
     let a = app();
     match id {
-        HK_NEW => spawn_tab(),
+        HK_NEW => spawn_tab(Profile::GitBash),
+        HK_NEW_WSL => spawn_default_wsl(),
         HK_CLOSE => close_tab(a.active),
         HK_NEXT => cycle(1),
         HK_PREV => cycle(-1),
@@ -605,15 +741,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             match hit(x, y) {
                 Hit::Tab(i) => activate(i),
                 Hit::Close(i) => close_tab(i),
-                Hit::Plus => spawn_tab(),
+                Hit::Plus => spawn_tab(Profile::GitBash),
+                Hit::Menu => show_menu(),
                 Hit::None => {}
+            }
+            return 0;
+        }
+        WM_RBUTTONUP => {
+            let (x, y) = mouse_xy(lp);
+            if matches!(hit(x, y), Hit::Plus | Hit::Menu) {
+                show_menu();
             }
             return 0;
         }
         WM_LBUTTONDBLCLK => {
             let (x, y) = mouse_xy(lp);
             if y < bar_h() && hit(x, y) == Hit::None {
-                spawn_tab();
+                spawn_tab(Profile::GitBash);
             }
             return 0;
         }
@@ -670,6 +814,9 @@ fn main() {
             active: 0,
             mintty,
             icon: format!(r"{git}\mingw64\share\git\git-for-windows.ico").replace('\\', "/"),
+            wsl: format!(r"{}\System32\wsl.exe", std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()))
+                .replace('\\', "/"),
+            distros: Vec::new(),
             rc: rc.to_string_lossy().replace('\\', "/"),
             home: std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into()),
             dpi: GetDpiForSystem().max(96),
@@ -716,7 +863,7 @@ fn main() {
         DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE as _, &dark as *const i32 as _, 4);
 
         update_font();
-        spawn_tab();
+        spawn_tab(Profile::GitBash);
         ShowWindow(hwnd, SW_SHOW);
         SetTimer(hwnd, TIMER_POLL, 100, None);
 
