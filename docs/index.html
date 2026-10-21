@@ -118,14 +118,6 @@
     .card h3 { margin: 10px 0 6px; font-size: 17px; }
     .card p { margin: 0; color: var(--dim); font-size: 14.5px; }
 
-    .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    .bar-row { margin: 18px 0 6px; display: flex; justify-content: space-between; font-size: 14px; }
-    .bar-row span:last-child { font-family: var(--mono); color: var(--dim); }
-    .bar { height: 10px; border-radius: 99px; background: #1f1f24; overflow: hidden; }
-    .bar i { display: block; height: 100%; border-radius: 99px; }
-    .bar .slow { background: #4a4a55; width: 100%; }
-    .bar .fast { background: var(--accent); width: 5%; min-width: 10px; }
-
     table { width: 100%; border-collapse: collapse; font-size: 15px; }
     td { padding: 12px 4px; border-bottom: 1px solid var(--line); }
     td:last-child { color: var(--dim); }
@@ -150,7 +142,6 @@
 
     @media (max-width: 640px) {
       nav .links { gap: 14px; }
-      .compare { grid-template-columns: 1fr; }
       .titlebar .ctrls { display: none; }
       .tabbar button { width: auto; flex: 1; max-width: none; }
       .term { font-size: 12px; min-height: 240px; }
@@ -211,11 +202,6 @@
           <p>Rust + Win32로 만든 단일 실행 파일. 설치도, 런타임도, Electron도 없습니다.</p>
         </div>
         <div class="card">
-          <div class="num">38s → 2s</div>
-          <h3>빠른 시작</h3>
-          <p>보안 프로그램 때문에 Git Bash가 느린 PC에서도 바로 뜹니다. 프롬프트·git 브랜치 표시·자동완성은 그대로.</p>
-        </div>
-        <div class="card">
           <div class="num">+ WSL</div>
           <h3>리눅스 탭도 한 창에</h3>
           <p><kbd>▾</kbd> 메뉴에서 설치된 WSL 배포판(Ubuntu 등)을 골라 Git Bash 옆에 탭으로 엽니다. 점 색으로 구분돼요.</p>
@@ -224,24 +210,6 @@
           <div class="num">Ctrl+Tab</div>
           <h3>익숙한 탭 조작</h3>
           <p>브라우저처럼 새 탭, 닫기, 전환, Alt+숫자 이동. 휠클릭으로 닫고 더블클릭으로 엽니다.</p>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <h2>얼마나 빨라지나요?</h2>
-      <p class="sub">은행·보안 프로그램이 깔린 PC에서는 프로그램 하나 띄우는 데 1초씩 걸리기도 합니다. 기본 Git Bash는 시작할 때 그런 프로그램을 십여 개 실행합니다.</p>
-      <div class="compare">
-        <div class="card">
-          <h3>셸 시작 시간 (실측)</h3>
-          <div class="bar-row"><span>기본 Git Bash 로그인</span><span>약 38초</span></div>
-          <div class="bar"><i class="slow"></i></div>
-          <div class="bar-row"><span>bashtab</span><span>약 1~2초</span></div>
-          <div class="bar"><i class="fast"></i></div>
-        </div>
-        <div class="card">
-          <h3>어떻게?</h3>
-          <p>bashtab은 <code>/etc/profile</code> 대신, 외부 프로그램을 하나도 실행하지 않는 시작 스크립트를 씁니다. git 브랜치는 <code>.git/HEAD</code>를 bash 내장 기능만으로 읽고, 자동완성은 처음 Tab을 누를 때 불러옵니다. <code>~/.bashrc</code>는 그대로 읽습니다.</p>
         </div>
       </div>
     </section>
