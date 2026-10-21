@@ -43,4 +43,10 @@ cargo build --release   # target/release/bashtab.exe
 
 ## 아이콘
 
-`icon.ico` / `icon.png`는 [Git for Windows](https://gitforwindows.org/) 아이콘입니다.
+`icon.ico` / `icon.png`는 [`tools/make-icon.ps1`](tools/make-icon.ps1)로 생성합니다.
+
+```powershell
+./tools/make-icon.ps1 .
+```
+
+bashtab은 Git for Windows 프로젝트와 관련이 없습니다.

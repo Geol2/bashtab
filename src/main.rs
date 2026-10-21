@@ -84,7 +84,6 @@ struct App {
     tabs: Vec<Tab>,
     active: usize,
     mintty: String,
-    icon: String,
     wsl: String,
     distros: Vec<String>, // default distribution first
     rc: String,
@@ -266,14 +265,14 @@ fn spawn_tab(profile: Profile) {
         .current_dir(&a.home);
     match &profile {
         Profile::GitBash => {
-            cmd.args(["-i", &a.icon, "/usr/bin/bash", "--noprofile", "--rcfile", &a.rc, "-i"])
+            cmd.args(["/usr/bin/bash", "--noprofile", "--rcfile", &a.rc, "-i"])
                 .env("MSYSTEM", "MINGW64")
                 .env("CHERE_INVOKING", "1");
         }
         Profile::Wsl(distro) => {
             // -h error: keep the tab open to show why WSL failed to start.
             // "~" is quoted so mintty's cygwin command-line globbing leaves it alone.
-            cmd.args(["-h", "error", "-i", &a.wsl, &a.wsl, "-d", distro, "--cd"]).raw_arg("\"~\"");
+            cmd.args(["-h", "error", &a.wsl, "-d", distro, "--cd"]).raw_arg("\"~\"");
         }
     }
     match cmd.spawn() {
@@ -813,7 +812,6 @@ fn main() {
             tabs: Vec::new(),
             active: 0,
             mintty,
-            icon: format!(r"{git}\mingw64\share\git\git-for-windows.ico").replace('\\', "/"),
             wsl: format!(r"{}\System32\wsl.exe", std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()))
                 .replace('\\', "/"),
             distros: Vec::new(),
