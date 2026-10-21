@@ -30,13 +30,30 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
 
 ## 설치
 
-[Git for Windows](https://gitforwindows.org/)가 설치되어 있어야 합니다.
+[Git for Windows](https://gitforwindows.org/)가 설치되어 있어야 합니다 (설치 프로그램 또는 `scoop install git`).
+
+**Scoop (권장, SmartScreen 경고 없음)**
+
+```powershell
+scoop bucket add bashtab https://github.com/Geol2/bashtab
+scoop install bashtab/bashtab
+```
+
+**직접 다운로드**
+
 [Releases](https://github.com/Geol2/bashtab/releases)에서 `bashtab.exe`를 받아 실행하면 끝입니다.
+아직 코드 서명이 없어서 처음 실행할 때 SmartScreen 경고가 뜨면 "추가 정보 → 실행"을 누르세요.
 
 ## 빌드
 
 ```bash
 cargo build --release   # target/release/bashtab.exe
+```
+
+`v*` 태그를 push하면 GitHub Actions가 exe를 빌드해 Release에 올리고, Scoop manifest(`bucket/bashtab.json`)의 버전과 해시를 갱신합니다.
+
+```bash
+git tag v0.3.2 && git push origin v0.3.2
 ```
 
 `BASHTAB_LOG=1` 환경 변수를 주고 실행하면 `%LOCALAPPDATA%\bashtab\debug.log`에 디버그 로그를 남깁니다.
@@ -50,3 +67,7 @@ cargo build --release   # target/release/bashtab.exe
 ```
 
 bashtab은 Git for Windows 프로젝트와 관련이 없습니다.
+
+## 라이선스
+
+[MIT](LICENSE)

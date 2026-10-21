@@ -155,13 +155,32 @@ fn wsl_distros() -> Vec<String> {
     out
 }
 
+/// Git for Windows root: installer registry key, common install dirs,
+/// Scoop's PortableGit, then any `git.exe` on PATH (…\cmd or …\bin).
 fn git_dir() -> String {
+    let has_mintty = |p: &Path| p.join(r"usr\bin\mintty.exe").exists();
     if let Some(p) = reg_string(HKEY_LOCAL_MACHINE, "SOFTWARE\\GitForWindows", "InstallPath") {
-        return p;
+        if has_mintty(Path::new(&p)) {
+            return p;
+        }
     }
-    for p in [r"C:\Program Files\Git", r"C:\Program Files (x86)\Git"] {
-        if Path::new(p).join(r"usr\bin\mintty.exe").exists() {
-            return p.into();
+    let mut candidates: Vec<std::path::PathBuf> =
+        vec![r"C:\Program Files\Git".into(), r"C:\Program Files (x86)\Git".into()];
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        candidates.push(Path::new(&home).join(r"scoop\apps\git\current"));
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            if dir.join("git.exe").exists() {
+                if let Some(root) = dir.parent() {
+                    candidates.push(root.to_path_buf());
+                }
+            }
+        }
+    }
+    for p in candidates {
+        if has_mintty(&p) {
+            return p.to_string_lossy().into_owned();
         }
     }
     r"C:\Program Files\Git".into()

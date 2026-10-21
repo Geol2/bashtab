@@ -1,0 +1,66 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bashtab
+          path: target/release/bashtab.exe
+          if-no-files-found: error
+
+  # On a v* tag: publish the exe to the GitHub release and point the
+  # Scoop manifest (bucket/bashtab.json) at it.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bashtab
+          path: dist
+
+      - name: Publish release
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/bashtab.exe --clobber
+          else
+            gh release create "$TAG" dist/bashtab.exe --title "bashtab $TAG" --generate-notes
+          fi
+
+      - name: Update Scoop manifest
+        run: |
+          version="${TAG#v}"
+          hash=$(sha256sum dist/bashtab.exe | cut -d' ' -f1)
+          url="https://github.com/Geol2/bashtab/releases/download/$TAG/bashtab.exe"
+          jq --arg v "$version" --arg u "$url" --arg h "$hash" \
+            '.version = $v | .url = $u | .hash = $h' bucket/bashtab.json > bucket/bashtab.json.new
+          mv bucket/bashtab.json.new bucket/bashtab.json
+          if git diff --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "scoop: bashtab $version"
+          git push origin HEAD:main

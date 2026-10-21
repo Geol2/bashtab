@@ -1,8 +1,10 @@
 [package]
 name = "bashtab"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "Git Bash dedicated tabbed terminal for Windows (embeds mintty)"
+license = "MIT"
+repository = "https://github.com/Geol2/bashtab"
 
 [dependencies]
 windows-sys = { version = "0.59", features = [

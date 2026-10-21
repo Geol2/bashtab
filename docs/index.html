@@ -136,6 +136,11 @@
     .step p { margin: 3px 0 0; }
     .step p small { color: var(--dim); }
     code { font-family: var(--mono); font-size: .9em; background: #1c1c21; padding: 2px 6px; border-radius: 5px; }
+    .cmd {
+      margin: 0; padding: 16px 18px; border-radius: 10px; overflow-x: auto;
+      background: var(--bg-2); border: 1px solid var(--line);
+      font-family: var(--mono); font-size: 13.5px; line-height: 1.7; color: var(--fg);
+    }
 
     .final { text-align: center; padding: 96px 0 0; }
     footer { margin-top: 96px; padding: 28px 0 40px; border-top: 1px solid var(--line); color: var(--dim); font-size: 13px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
@@ -160,7 +165,7 @@
     </nav>
 
     <header class="hero">
-      <span class="pill"><b>v0.3.1</b> Windows · 무설치 · 300KB</span>
+      <span class="pill"><b>v0.3.2</b> Windows · 무설치 · 300KB</span>
       <h1>Git Bash를 <span class="tab">[탭]</span>으로.</h1>
       <p class="lead">평소 쓰던 Git Bash(mintty) 창을 그대로 탭 안에 담았습니다. 새 터미널을 배울 필요 없이, 창 열 개 대신 탭 열 개.</p>
       <div class="cta">
@@ -237,6 +242,11 @@
         <div class="step"><p><a href="https://github.com/Geol2/bashtab/releases/latest/download/bashtab.exe">bashtab.exe</a>를 받아 원하는 폴더에 둡니다.<br /><small>서명되지 않은 exe라 처음 실행할 때 SmartScreen 경고가 뜨면 “추가 정보 → 실행”을 누르세요.</small></p></div>
         <div class="step"><p>실행하고 작업 표시줄에 고정하면 끝.</p></div>
       </div>
+
+      <h3 style="margin: 40px 0 8px; font-size: 18px;">Scoop을 쓴다면</h3>
+      <p class="sub" style="margin-bottom: 14px;">SmartScreen 경고 없이 설치되고, <code>scoop update</code>로 업데이트됩니다. 시작 메뉴 바로가기도 만들어져요.</p>
+      <pre class="cmd"><span class="d">PS&gt;</span> scoop bucket add bashtab https://github.com/Geol2/bashtab
+<span class="d">PS&gt;</span> scoop install bashtab/bashtab</pre>
     </section>
 
     <div class="final">
