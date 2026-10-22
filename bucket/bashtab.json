@@ -1,5 +1,5 @@
 {
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Git Bash dedicated tabbed terminal for Windows (embeds mintty)",
   "homepage": "https://diary.geol2.com/bashtab/",
   "license": "MIT",
@@ -7,8 +7,8 @@
   "suggest": {
     "Git": "git"
   },
-  "url": "https://github.com/Geol2/bashtab/releases/download/v0.3.2/bashtab.exe",
-  "hash": "d54027a3f854a374110b27711a5e5f5860bb094ba20c1ac2cdccf71eee687c91",
+  "url": "https://github.com/Geol2/bashtab/releases/download/v0.4.0/bashtab.exe",
+  "hash": "084ee30649a82813da88c63158380901e1f197a8b5d554ae61d1795643cb0bfb",
   "bin": "bashtab.exe",
   "shortcuts": [
     [
