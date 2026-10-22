@@ -9,7 +9,13 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
 ## 특징
 
 - 탭마다 실제 mintty + bash 프로세스 (Win32 `SetParent`로 임베드)
-- **WSL 탭**: `+` 옆 `▾` 메뉴에서 설치된 WSL 배포판(Ubuntu 등)을 골라 같은 창에서 열기
+- **크롬 스타일 탭 바**: 제목표시줄 자리에 탭이 들어가고, 최소화·최대화·닫기 버튼을 직접 그림
+  - 빈 곳을 끌어 창 이동, 더블클릭으로 최대화, Win11 스냅 레이아웃(최대화 버튼에 마우스 올리기) 지원
+- **홈 화면**: 처음 켜거나 `+`를 누르면 열리는 새 탭 화면
+  - 셸 카드(Git Bash / WSL 배포판)를 눌러 그 탭에서 바로 시작
+  - 즐겨찾는 폴더: 폴더를 끌어다 놓거나 "+ 폴더 추가"로 등록, 클릭하면 그 폴더에서 Git Bash, 우클릭하면 WSL로 열기 / 제거
+  - 단축키 안내
+- **WSL 탭**: 홈 화면이나 `+` 옆 `▾` 메뉴에서 설치된 WSL 배포판(Ubuntu 등)을 골라 같은 창에서 열기
   - 탭 앞 점 색으로 구분: 주황 = Git Bash, 보라 = WSL
   - WSL이 오류로 시작에 실패하면 탭을 남겨 오류 메시지를 보여줌
 - 가벼운 시작 스크립트: `/etc/profile` 대신 외부 프로세스를 띄우지 않는 [`fast-rc.sh`](fast-rc.sh) 사용
@@ -20,9 +26,10 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
 
 | 키 | 동작 |
 |---|---|
-| Ctrl+Shift+T / `+` / 탭 바 빈 곳 더블클릭 | 새 Git Bash 탭 |
+| `+` | 새 탭 (홈 화면) |
+| Ctrl+Shift+T | 새 Git Bash 탭 |
 | Ctrl+Shift+L | 새 WSL 탭 (기본 배포판) |
-| `▾` / `+` 우클릭 | 프로필 선택 메뉴 (Git Bash / WSL 배포판) |
+| `▾` / `+` 우클릭 | 셸 선택 메뉴 (홈 / Git Bash / WSL 배포판) |
 | Ctrl+Shift+W / 휠클릭 / × | 탭 닫기 |
 | Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 탭 |
 | Alt+1~9 | N번째 탭 (9 = 마지막) |
@@ -53,10 +60,11 @@ cargo build --release   # target/release/bashtab.exe
 `v*` 태그를 push하면 GitHub Actions가 exe를 빌드해 Release에 올리고, Scoop manifest(`bucket/bashtab.json`)의 버전과 해시를 갱신합니다.
 
 ```bash
-git tag v0.3.2 && git push origin v0.3.2
+git tag v0.4.0 && git push origin v0.4.0
 ```
 
 `BASHTAB_LOG=1` 환경 변수를 주고 실행하면 `%LOCALAPPDATA%\bashtab\debug.log`에 디버그 로그를 남깁니다.
+즐겨찾는 폴더는 `%LOCALAPPDATA%\bashtab\favorites.txt`에 한 줄에 하나씩 저장됩니다.
 
 ## 아이콘
 

@@ -84,22 +84,34 @@
       border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
       background: #000; box-shadow: 0 30px 80px rgba(0, 0, 0, .6);
     }
-    .titlebar { display: flex; align-items: center; height: 34px; padding: 0 12px; background: #202020; font-size: 12px; color: var(--dim); gap: 8px; }
-    .titlebar img { width: 16px; height: 16px; }
-    .titlebar .ctrls { margin-left: auto; display: flex; gap: 22px; color: #bbb; font-size: 13px; }
-    .tabbar { display: flex; height: 34px; background: #202020; overflow: hidden; }
+    /* tabs live in the title bar, like the app */
+    .tabbar { display: flex; align-items: flex-end; height: 40px; padding: 0 0 0 8px; background: #202020; overflow: hidden; }
     .tabbar button {
       all: unset; cursor: pointer; display: flex; align-items: center; gap: 8px;
-      width: 180px; max-width: 36%; padding: 0 10px 0 14px; font-size: 12px; color: #969696;
-      border-top: 2px solid transparent; position: relative; box-sizing: border-box;
+      width: 170px; min-width: 0; height: 32px; padding: 0 10px 0 12px; font-size: 12px; color: #969696;
+      border-radius: 12px 12px 0 0; position: relative; box-sizing: border-box;
     }
-    .tabbar button:not(.on)::after { content: ''; position: absolute; right: 0; top: 9px; bottom: 9px; width: 1px; background: #3c3c3c; }
-    .tabbar button:hover:not(.on) { background: #303030; }
-    .tabbar button.on { background: #0c0c0c; color: #f0f0f0; border-top-color: var(--accent); }
+    .tabbar button:not(.on):not(.plus)::after { content: ''; position: absolute; right: 0; top: 9px; bottom: 9px; width: 1px; background: #3e3e42; }
+    .tabbar button:hover:not(.on) { background: #2e2e32; }
+    .tabbar button.on { background: #0e0e10; color: #f0f0f0; }
+    .tabbar .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+    .tabbar .dot.wsl { background: #aa6ee6; }
+    .tabbar .dot.home { background: #64646a; }
     .tabbar .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .tabbar .x { opacity: .7; }
-    .tabbar .plus { width: 36px; justify-content: center; padding: 0; color: #f0f0f0; font-size: 15px; }
-    .tabbar .plus::after { display: none; }
+    .tabbar .plus { width: 30px; height: 28px; margin: 0 0 2px 4px; justify-content: center; padding: 0; color: #f0f0f0; font-size: 15px; border-radius: 8px; }
+    .tabbar .chev { color: #969696; font-size: 11px; margin: 0 0 9px 4px; }
+    .tabbar .ctrls { margin-left: auto; align-self: stretch; display: flex; color: #ccc; font-size: 12px; }
+    .tabbar .ctrls span { width: 46px; display: grid; place-items: center; }
+    .term.home { background: #0e0e10; color: var(--fg); font-family: var(--sans); white-space: normal; padding: 28px 32px; }
+    .home h4 { margin: 0; font-size: 22px; }
+    .home .hsub { color: var(--dim); font-size: 13px; margin: 2px 0 18px; }
+    .home .lbl { color: var(--dim); font-size: 11.5px; margin: 0 0 8px; }
+    .home .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
+    .home .hc { background: #1c1c20; border: 1px solid #303036; border-radius: 10px; padding: 10px 12px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .home .hc small { display: block; font-weight: 400; color: var(--dim); font-size: 11px; }
+    .home .fav { background: #1c1c20; border: 1px solid #303036; border-radius: 9px; padding: 9px 12px; font-size: 13px; font-weight: 600; margin-bottom: 6px; display: flex; gap: 14px; }
+    .home .fav span { font-weight: 400; color: var(--dim); font-size: 11.5px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .term {
       font-family: var(--mono); font-size: 13.5px; line-height: 1.55; color: #ccc;
       padding: 14px 16px 22px; min-height: 300px; white-space: pre-wrap; word-break: break-all;
@@ -147,8 +159,9 @@
 
     @media (max-width: 640px) {
       nav .links { gap: 14px; }
-      .titlebar .ctrls { display: none; }
-      .tabbar button { width: auto; flex: 1; max-width: none; }
+      .tabbar .ctrls, .tabbar .chev { display: none; }
+      .tabbar button { width: auto; flex: 1; padding: 0 8px; }
+      .tabbar .x { display: none; }
       .term { font-size: 12px; min-height: 240px; }
     }
   </style>
@@ -165,7 +178,7 @@
     </nav>
 
     <header class="hero">
-      <span class="pill"><b>v0.3.2</b> Windows · 무설치 · 300KB</span>
+      <span class="pill"><b>v0.4.0</b> Windows · 무설치 · 300KB</span>
       <h1>Git Bash를 <span class="tab">[탭]</span>으로.</h1>
       <p class="lead">평소 쓰던 Git Bash(mintty) 창을 그대로 탭 안에 담았습니다. 새 터미널을 배울 필요 없이, 창 열 개 대신 탭 열 개.</p>
       <div class="cta">
@@ -181,12 +194,14 @@
       <p class="meta">필요한 것: <a href="https://gitforwindows.org/">Git for Windows</a> · 64비트 Windows 10/11</p>
 
       <div class="window" aria-label="bashtab 실행 화면 예시">
-        <div class="titlebar"><img src="icon.png" alt="" /><span id="wtitle">~/projects/web</span><span class="ctrls"><span>—</span><span>☐</span><span>✕</span></span></div>
         <div class="tabbar" role="tablist">
-          <button class="on" data-i="0"><span class="t">~/projects/web</span><span class="x">×</span></button>
-          <button data-i="1"><span class="t">~/projects/api</span><span class="x">×</span></button>
-          <button data-i="2"><span class="t">~</span><span class="x">×</span></button>
-          <button class="plus" title="새 탭">+</button>
+          <button data-i="3"><span class="dot home"></span><span class="t">새 탭</span><span class="x">×</span></button>
+          <button class="on" data-i="0"><span class="dot"></span><span class="t">~/projects/web</span><span class="x">×</span></button>
+          <button data-i="1"><span class="dot"></span><span class="t">~/projects/api</span><span class="x">×</span></button>
+          <button data-i="2"><span class="dot wsl"></span><span class="t">user@PC: ~</span><span class="x">×</span></button>
+          <button class="plus" title="새 탭" data-i="3">+</button>
+          <span class="chev">⌄</span>
+          <span class="ctrls"><span>—</span><span>☐</span><span>✕</span></span>
         </div>
         <div class="term" id="term"></div>
       </div>
@@ -212,9 +227,14 @@
           <p><kbd>▾</kbd> 메뉴에서 설치된 WSL 배포판(Ubuntu 등)을 골라 Git Bash 옆에 탭으로 엽니다. 점 색으로 구분돼요.</p>
         </div>
         <div class="card">
+          <div class="num">홈 화면</div>
+          <h3>새 탭에서 바로 고르기</h3>
+          <p>새 탭을 열면 셸 카드와 즐겨찾는 폴더가 나와요. 폴더를 끌어다 놓아 등록하고, 클릭 한 번으로 그 폴더에서 시작합니다.</p>
+        </div>
+        <div class="card">
           <div class="num">Ctrl+Tab</div>
-          <h3>익숙한 탭 조작</h3>
-          <p>브라우저처럼 새 탭, 닫기, 전환, Alt+숫자 이동. 휠클릭으로 닫고 더블클릭으로 엽니다.</p>
+          <h3>크롬 같은 탭</h3>
+          <p>탭이 제목표시줄 자리에 들어가 화면을 넓게 씁니다. 새 탭, 닫기, 전환, Alt+숫자 이동, 휠클릭으로 닫기, 스냅 레이아웃까지.</p>
         </div>
       </div>
     </section>
@@ -223,9 +243,10 @@
       <h2>단축키</h2>
       <p class="sub">bashtab 창이 활성화되어 있을 때만 동작합니다.</p>
       <table>
-        <tr><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd></td><td>새 Git Bash 탭 (또는 <kbd>+</kbd>, 탭 바 빈 곳 더블클릭)</td></tr>
+        <tr><td><kbd>+</kbd></td><td>새 탭 (홈 화면)</td></tr>
+        <tr><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd></td><td>새 Git Bash 탭</td></tr>
         <tr><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>L</kbd></td><td>새 WSL 탭 (기본 배포판)</td></tr>
-        <tr><td><kbd>▾</kbd></td><td>Git Bash / WSL 배포판 골라서 새 탭</td></tr>
+        <tr><td><kbd>▾</kbd></td><td>홈 / Git Bash / WSL 배포판 골라서 새 탭</td></tr>
         <tr><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>W</kbd></td><td>탭 닫기 (또는 휠클릭, ×)</td></tr>
         <tr><td><kbd>Ctrl</kbd> + <kbd>Tab</kbd></td><td>다음 탭</td></tr>
         <tr><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Tab</kbd></td><td>이전 탭</td></tr>
@@ -276,18 +297,31 @@
         html: `${P('~/projects/api')}<span class="c"> (feature/login)</span>\n$ git log --oneline -3\n<span class="y">a1c9e42</span> Add login endpoint\n<span class="y">7f3b210</span> Hash passwords with argon2\n<span class="y">5d02c8e</span> Set up project\n${P('~/projects/api')}<span class="c"> (feature/login)</span>\n$ <span class="cursor"></span>`,
       },
       {
-        title: '~',
-        html: `${P('~')}\n$ ls\n<span class="c">Desktop/</span>  <span class="c">Documents/</span>  <span class="c">Downloads/</span>  <span class="c">projects/</span>\n${P('~')}\n$ <span class="cursor"></span>`,
+        title: 'user@PC: ~',
+        html: `\n<span class="g">user@PC</span>:<span class="c">~</span>$ uname -sr\nLinux 6.6.87.2-microsoft-standard-WSL2\n<span class="g">user@PC</span>:<span class="c">~</span>$ <span class="cursor"></span>`,
+      },
+      {
+        title: 'bashtab',
+        home: true,
+        html: `<h4>bashtab</h4><p class="hsub">새 탭에서 열 셸이나 폴더를 고르세요.</p>
+          <p class="lbl">셸</p>
+          <div class="cards">
+            <div class="hc"><i class="dot" style="width:8px;height:8px;border-radius:50%;background:var(--accent)"></i><div>Git Bash<small>Git for Windows · MINGW64</small></div></div>
+            <div class="hc"><i class="dot" style="width:8px;height:8px;border-radius:50%;background:#aa6ee6"></i><div>Ubuntu<small>WSL · 기본 배포판</small></div></div>
+          </div>
+          <p class="lbl">즐겨찾는 폴더</p>
+          <div class="fav">web<span>C:\\Users\\user\\projects\\web</span></div>
+          <div class="fav">api<span>C:\\Users\\user\\projects\\api</span></div>`,
       },
     ];
     screens[0].html += `${P('~/projects/web')}<span class="c"> (main)</span>\n$ <span class="cursor"></span>`;
     const term = document.getElementById('term');
-    const title = document.getElementById('wtitle');
-    const tabs = document.querySelectorAll('.tabbar button[data-i]');
+    const tabs = document.querySelectorAll('.tabbar button[data-i]:not(.plus)');
+    document.querySelector('.tabbar .plus').addEventListener('click', () => show(3));
     function show(i) {
       tabs.forEach((b) => b.classList.toggle('on', +b.dataset.i === i));
+      term.classList.toggle('home', !!screens[i].home);
       term.innerHTML = screens[i].html.replace(/^\n/, '');
-      title.textContent = screens[i].title;
     }
     tabs.forEach((b) => b.addEventListener('click', () => show(+b.dataset.i)));
     show(0);
