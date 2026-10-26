@@ -6,6 +6,7 @@
 //! by the tab strip (Chrome style).
 
 use std::mem::{size_of, zeroed};
+use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -16,6 +17,9 @@ use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Dwm::*;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::Com::*;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
+use windows_sys::Win32::System::JobObjects::*;
+use windows_sys::Win32::System::Threading::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::UI::HiDpi::*;
@@ -35,6 +39,9 @@ const HK_NEW_WSL: i32 = 5;
 const MENU_GIT: usize = 1;
 const MENU_HOME: usize = 2;
 const MENU_REMOVE: usize = 3;
+const MENU_RESTART: usize = 4;
+const MENU_KILL: usize = 5;
+const MENU_CLOSE: usize = 6;
 const MENU_WSL: usize = 100; // MENU_WSL + distro index
 const HK_TAB: i32 = 10; // HK_TAB + 1..=9
 // not exported by windows-sys
@@ -80,16 +87,67 @@ struct Tab {
     profile: Option<Profile>,
     child: Option<Child>,
     hwnd: HWND, // mintty window, null until it shows up (always null for home)
+    // Job object holding mintty and everything started in the tab, so a
+    // force-kill also takes down native programs (java, node, …) that
+    // msys signals don't reach. Null for home tabs.
+    job: HANDLE,
     title: String,
     started: Instant,
 }
 
 impl Tab {
     fn home() -> Tab {
-        Tab { profile: None, child: None, hwnd: null_mut(), title: "새 탭".into(), started: Instant::now() }
+        Tab {
+            profile: None,
+            child: None,
+            hwnd: null_mut(),
+            job: null_mut(),
+            title: "새 탭".into(),
+            started: Instant::now(),
+        }
     }
     fn is_home(&self) -> bool {
         self.profile.is_none()
+    }
+    /// Kill mintty and every process started from this tab.
+    fn kill_tree(&mut self) {
+        if !self.job.is_null() {
+            unsafe { TerminateJobObject(self.job, 1) };
+        } else if let Some(c) = self.child.as_mut() {
+            let _ = c.kill();
+        }
+    }
+}
+
+impl Drop for Tab {
+    fn drop(&mut self) {
+        if !self.job.is_null() {
+            unsafe { CloseHandle(self.job) };
+        }
+    }
+}
+
+/// Resume every thread of a process created with CREATE_SUSPENDED.
+fn resume_process(pid: u32) {
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return;
+        }
+        let mut te: THREADENTRY32 = zeroed();
+        te.dwSize = size_of::<THREADENTRY32>() as u32;
+        let mut ok = Thread32First(snap, &mut te);
+        while ok != 0 {
+            if te.th32OwnerProcessID == pid {
+                let th = OpenThread(THREAD_SUSPEND_RESUME, 0, te.th32ThreadID);
+                if !th.is_null() {
+                    ResumeThread(th);
+                    CloseHandle(th);
+                }
+            }
+            ok = Thread32Next(snap, &mut te);
+        }
+        CloseHandle(snap);
     }
 }
 
@@ -140,6 +198,7 @@ struct App {
     pressed: Hit,
     tracking: bool,
     tracking_nc: bool,
+    closing: bool, // window close requested, waiting for tabs to exit
     focused: bool,
     home_items: Vec<(RECT, HomeItem)>, // rebuilt on every paint of the home tab
 }
@@ -450,6 +509,8 @@ fn hit(x: i32, y: i32) -> Hit {
 fn start_term(slot: Option<usize>, profile: Profile, cwd: Option<&str>) {
     let a = app();
     let mut cmd = Command::new(&a.mintty);
+    // started suspended so it joins the tab's job before it can spawn anything
+    cmd.creation_flags(CREATE_SUSPENDED);
     cmd.args(["--nodaemon", "-w", "hide", "-B", "void", "-o", "SwitchShortcuts=no", "-o", "CtrlShiftShortcuts=yes"])
         .args(["-t", profile.label()]);
     match &profile {
@@ -471,12 +532,23 @@ fn start_term(slot: Option<usize>, profile: Profile, cwd: Option<&str>) {
     }
     match cmd.spawn() {
         Ok(child) => {
-            dlog(&format!("spawned pid {} ({}) cwd={cwd:?}", child.id(), profile.label()));
+            let job = unsafe {
+                let job = CreateJobObjectW(null(), null());
+                if !job.is_null() && AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) == 0 {
+                    CloseHandle(job);
+                    null_mut()
+                } else {
+                    job
+                }
+            };
+            resume_process(child.id());
+            dlog(&format!("spawned pid {} ({}) cwd={cwd:?} job={}", child.id(), profile.label(), !job.is_null()));
             let tab = Tab {
                 title: profile.label().to_string(),
                 profile: Some(profile),
                 child: Some(child),
                 hwnd: null_mut(),
+                job,
                 started: Instant::now(),
             };
             match slot.filter(|&i| a.tabs.get(i).is_some_and(Tab::is_home)) {
@@ -719,12 +791,48 @@ fn close_tab(i: usize) {
     if t.is_home() {
         remove_tab(i);
     } else if t.hwnd.is_null() {
-        if let Some(c) = t.child.as_mut() {
-            let _ = c.kill();
-        }
+        t.kill_tree();
     } else {
-        // lets mintty ask for confirmation if something is still running
+        // lets mintty hang up bash, or ask first if something is still running
         unsafe { PostMessageW(t.hwnd, WM_CLOSE, 0, 0) };
+    }
+}
+
+/// Kill everything in the tab and start the same shell again in its place.
+fn restart_tab(i: usize) {
+    let a = app();
+    let Some(t) = a.tabs.get_mut(i) else { return };
+    let Some(profile) = t.profile.clone() else { return };
+    t.kill_tree();
+    a.tabs[i] = Tab::home();
+    start_term(Some(i), profile, None);
+}
+
+/// Right-click menu on a tab.
+fn tab_menu(i: usize) {
+    let a = app();
+    let Some(t) = a.tabs.get(i) else { return };
+    let mut items = Vec::new();
+    if !t.is_home() {
+        items.push((MENU_RESTART, "다시 시작".to_string()));
+        items.push((MENU_KILL, "강제 종료 (실행 중인 프로그램 포함)".into()));
+        items.push((0, String::new()));
+    }
+    items.push((MENU_CLOSE, "탭 닫기\tCtrl+Shift+W".into()));
+    let cmd = unsafe {
+        let mut pt: POINT = zeroed();
+        GetCursorPos(&mut pt);
+        popup(&items, pt)
+    };
+    match cmd {
+        MENU_RESTART => restart_tab(i),
+        MENU_KILL => {
+            if let Some(t) = a.tabs.get_mut(i) {
+                t.kill_tree();
+            }
+        }
+        MENU_CLOSE => close_tab(i),
+        _ => {}
     }
 }
 
@@ -1342,6 +1450,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let (x, y) = mouse_xy(lp);
             match hit(x, y) {
                 Hit::Plus | Hit::Menu => show_menu(),
+                Hit::Tab(i) | Hit::Close(i) => tab_menu(i),
                 Hit::Home(i) => {
                     if let Some((_, HomeItem::Fav(f))) = a.home_items.get(i).cloned() {
                         favorite_menu(f);
@@ -1376,13 +1485,33 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             SetWindowPos(hwnd, null_mut(), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             return 0;
         }
+        // First close: ask each mintty to close so it hangs up bash (killing
+        // mintty would orphan bash); the window goes away once the poll timer
+        // sees every tab gone. Closing again while that is pending forces it.
         WM_CLOSE => {
+            if a.closing {
+                for t in a.tabs.iter_mut() {
+                    t.kill_tree();
+                }
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            a.closing = true;
+            a.tabs.retain(|t| !t.is_home());
             for t in a.tabs.iter_mut() {
-                if let Some(c) = t.child.as_mut() {
-                    let _ = c.kill();
+                if t.hwnd.is_null() {
+                    t.kill_tree();
+                } else {
+                    PostMessageW(t.hwnd, WM_CLOSE, 0, 0);
                 }
             }
-            DestroyWindow(hwnd);
+            if a.tabs.is_empty() {
+                DestroyWindow(hwnd);
+            } else {
+                a.active = 0;
+                layout();
+                refresh();
+            }
             return 0;
         }
         WM_DESTROY => {
@@ -1443,6 +1572,7 @@ fn main() {
             pressed: Hit::None,
             tracking: false,
             tracking_nc: false,
+            closing: false,
             focused: true,
             home_items: Vec::new(),
         }));

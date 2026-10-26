@@ -31,9 +31,21 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
 | Ctrl+Shift+L | 새 WSL 탭 (기본 배포판) |
 | `▾` / `+` 우클릭 | 셸 선택 메뉴 (홈 / Git Bash / WSL 배포판) |
 | Ctrl+Shift+W / 휠클릭 / × | 탭 닫기 |
+| 탭 우클릭 | 다시 시작 / 강제 종료 / 탭 닫기 |
 | Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 탭 |
 | Alt+1~9 | N번째 탭 (9 = 마지막) |
 | Ctrl+Shift+C / Ctrl+Shift+V | 복사 / 붙여넣기 (mintty) |
+
+## 탭이 멈춘 것 같을 때
+
+java, node, python 같은 Windows 프로그램을 앞쪽(foreground)에서 실행하면, 그 프로그램이 끝날 때까지 프롬프트가 돌아오지 않습니다.
+mintty에서는 이런 프로그램의 출력이 보이지 않거나 Ctrl+C가 안 먹을 수도 있습니다.
+
+- **탭 우클릭 → 강제 종료**: 그 탭에서 띄운 프로그램까지 모두 종료합니다 (탭마다 Windows 작업 개체로 묶어 관리).
+- **탭 우클릭 → 다시 시작**: 모두 종료하고 같은 셸을 새로 엽니다.
+- 서버나 에이전트처럼 계속 떠 있어야 하는 프로그램은 `winpty java ...`로 실행하거나, 서비스·백그라운드(`... > log.txt 2>&1 &`)로 돌리는 것을 권장합니다.
+
+창을 닫으면 각 탭에 정상 종료를 요청합니다(bash가 남지 않음). 실행 중인 프로그램이 있어 mintty가 확인을 묻는 동안 한 번 더 닫으면 강제로 모두 종료합니다.
 
 ## 설치
 
@@ -60,7 +72,7 @@ cargo build --release   # target/release/bashtab.exe
 `v*` 태그를 push하면 GitHub Actions가 exe를 빌드해 Release에 올리고, Scoop manifest(`bucket/bashtab.json`)의 버전과 해시를 갱신합니다.
 
 ```bash
-git tag v0.4.0 && git push origin v0.4.0
+git tag v0.4.1 && git push origin v0.4.1
 ```
 
 `BASHTAB_LOG=1` 환경 변수를 주고 실행하면 `%LOCALAPPDATA%\bashtab\debug.log`에 디버그 로그를 남깁니다.
