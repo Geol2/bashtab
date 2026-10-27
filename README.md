@@ -16,7 +16,8 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
   - 즐겨찾는 폴더: 폴더를 끌어다 놓거나 "+ 폴더 추가"로 등록, 클릭하면 그 폴더에서 Git Bash, 우클릭하면 WSL로 열기 / 제거
   - **글꼴**: 설치된 고정폭 글꼴과 크기를 골라 터미널 글꼴로 사용 (기본 Consolas 11pt, 새 탭부터 적용)
     - "mintty 기본 설정 사용"을 고르면 `~/.minttyrc` 설정을 그대로 씀
-  - **최근 폴더**: Git Bash 탭에서 `cd`로 이동한 폴더 4개를 최신 순으로 보여 줌. 클릭하면 그 폴더에서 Git Bash, 우클릭하면 WSL로 열기 / 즐겨찾기에 추가 / 제거
+  - **최근 폴더**: Git Bash 탭에서 `cd`로 이동한 폴더 4개를 최신 순으로 보여 줌. 클릭하면 그 폴더에서 Git Bash, 우클릭하면 WSL로 열기 / 열린 탭에서 이동 / 즐겨찾기에 추가 / 제거
+  - **열린 탭을 그 폴더로 이동**: 터미널 탭을 우클릭해 "이동: 폴더"를 고르면 그 탭의 셸에 `cd`를 입력해 줌 (WSL 탭은 `/mnt/d/...`로 바꿔서)
   - 단축키 안내
 - **WSL 탭**: 홈 화면이나 `+` 옆 `▾` 메뉴에서 설치된 WSL 배포판(Ubuntu 등)을 골라 같은 창에서 열기
   - 탭 앞 점 색으로 구분: 주황 = Git Bash, 보라 = WSL
@@ -35,7 +36,7 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
 | Ctrl+Shift+L | 새 WSL 탭 (기본 배포판) |
 | `▾` / `+` 우클릭 | 셸 선택 메뉴 (홈 / Git Bash / WSL 배포판) |
 | Ctrl+Shift+W / 휠클릭 / × | 탭 닫기 |
-| 탭 우클릭 | 다시 시작 / 강제 종료 / 탭 닫기 |
+| 탭 우클릭 | 최근·즐겨찾는 폴더로 이동 / 다시 시작 / 강제 종료 / 탭 닫기 |
 | Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 탭 |
 | Alt+1~9 | N번째 탭 (9 = 마지막) |
 | Ctrl+Shift+C / Ctrl+Shift+V | 복사 / 붙여넣기 (mintty) |
@@ -76,7 +77,7 @@ cargo build --release   # target/release/bashtab.exe
 `v*` 태그를 push하면 GitHub Actions가 exe를 빌드해 Release에 올리고, Scoop manifest(`bucket/bashtab.json`)의 버전과 해시를 갱신합니다.
 
 ```bash
-git tag v0.5.3 && git push origin v0.5.3
+git tag v0.5.4 && git push origin v0.5.4
 ```
 
 `BASHTAB_LOG=1` 환경 변수를 주고 실행하면 `%LOCALAPPDATA%\bashtab\debug.log`에 디버그 로그를 남깁니다.

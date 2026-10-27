@@ -46,6 +46,8 @@ const MENU_FONT_DEFAULT: usize = 7;
 const MENU_ADD_FAV: usize = 8;
 const MENU_FONT: usize = 1000; // MENU_FONT + font index
 const MENU_WSL: usize = 100; // MENU_WSL + distro index
+const MENU_GO: usize = 2000; // MENU_GO + index into jump_folders()
+const MENU_GO_TAB: usize = 3000; // MENU_GO_TAB + tab index
 const HK_TAB: i32 = 10; // HK_TAB + 1..=9
 // not exported by windows-sys
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -1020,6 +1022,13 @@ fn folder_menu(item: HomeItem) {
     let Some(path) = path else { return };
     let mut items = vec![(MENU_GIT, "Git Bash에서 열기".to_string())];
     wsl_menu_items(&mut items, "에서 열기", "");
+    let terms: Vec<_> = a.tabs.iter().enumerate().filter(|(_, t)| !t.hwnd.is_null()).collect();
+    if !terms.is_empty() {
+        items.push((0, String::new()));
+    }
+    for (i, t) in terms {
+        items.push((MENU_GO_TAB + i, format!("열린 탭에서 이동: {}", t.title)));
+    }
     items.push((0, String::new()));
     if let HomeItem::Recent(_) = item {
         if !a.favorites.iter().any(|f| f.eq_ignore_ascii_case(&path)) {
@@ -1051,6 +1060,10 @@ fn folder_menu(item: HomeItem) {
             }
             refresh();
         }
+        c if c >= MENU_GO_TAB => {
+            cd_in_tab(c - MENU_GO_TAB, &path);
+            activate(c - MENU_GO_TAB);
+        }
         c if c >= MENU_WSL => {
             if let Some(d) = a.distros.get(c - MENU_WSL).cloned() {
                 start_term(slot, Profile::Wsl(d), Some(&path));
@@ -1058,6 +1071,52 @@ fn folder_menu(item: HomeItem) {
         }
         _ => {}
     }
+}
+
+/// Make the shell in terminal tab `i` cd to `path` by typing the command
+/// into mintty (Ctrl+E Ctrl+U first clears whatever is on the prompt line).
+fn cd_in_tab(i: usize, path: &str) {
+    let Some(t) = app().tabs.get(i) else { return };
+    let dir = match &t.profile {
+        Some(Profile::GitBash) => path.replace('\\', "/"),
+        Some(Profile::Wsl(_)) => {
+            let b = path.as_bytes();
+            if b.len() < 2 || b[1] != b':' {
+                return; // no /mnt path for UNC folders
+            }
+            let rest = path[2..].replace('\\', "/");
+            format!("/mnt/{}{}", (b[0] as char).to_ascii_lowercase(), rest.trim_end_matches('/'))
+        }
+        None => return,
+    };
+    let line = format!("\x05\x15cd '{}'\r", dir.replace('\'', r"'\''"));
+    for c in line.encode_utf16() {
+        unsafe { PostMessageW(t.hwnd, WM_CHAR, c as WPARAM, 0) };
+    }
+}
+
+/// `path` cut to about `max` characters by dropping the middle.
+fn short_path(path: &str, max: usize) -> String {
+    let chars: Vec<char> = path.chars().collect();
+    if chars.len() <= max {
+        return path.to_string();
+    }
+    let head: String = chars[..max / 3].iter().collect();
+    let tail: String = chars[chars.len() - (max - max / 3 - 1)..].iter().collect();
+    format!("{head}…{tail}")
+}
+
+/// Folders offered by the tab menu's "move to": recent first, then favorites.
+fn jump_folders() -> Vec<String> {
+    let a = app();
+    update_recent();
+    let mut out = a.recent.clone();
+    for f in &a.favorites {
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(f)) {
+            out.push(f.clone());
+        }
+    }
+    out
 }
 
 fn home_click(i: usize) {
@@ -1119,6 +1178,13 @@ fn tab_menu(i: usize) {
     let a = app();
     let Some(t) = a.tabs.get(i) else { return };
     let mut items = Vec::new();
+    let folders = if t.hwnd.is_null() { Vec::new() } else { jump_folders() };
+    for (k, f) in folders.iter().enumerate() {
+        items.push((MENU_GO + k, format!("이동: {}\t{}", folder_name(f), short_path(f, 48))));
+    }
+    if !folders.is_empty() {
+        items.push((0, String::new()));
+    }
     if !t.is_home() {
         items.push((MENU_RESTART, "다시 시작".to_string()));
         items.push((MENU_KILL, "강제 종료 (실행 중인 프로그램 포함)".into()));
@@ -1138,6 +1204,12 @@ fn tab_menu(i: usize) {
             }
         }
         MENU_CLOSE => close_tab(i),
+        c if c >= MENU_GO => {
+            if let Some(f) = folders.get(c - MENU_GO) {
+                cd_in_tab(i, f);
+                activate(i);
+            }
+        }
         _ => {}
     }
 }
