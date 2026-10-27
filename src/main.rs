@@ -271,6 +271,100 @@ fn wsl_distros() -> Vec<String> {
     out
 }
 
+/// Disk image of a WSL 2 distribution, if it has one.
+fn wsl_vhdx(distro: &str) -> Option<PathBuf> {
+    unsafe {
+        let base = wide(r"Software\Microsoft\Windows\CurrentVersion\Lxss");
+        let mut key: HKEY = null_mut();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, base.as_ptr(), 0, KEY_READ, &mut key) != ERROR_SUCCESS {
+            return None;
+        }
+        let mut found = None;
+        for i in 0.. {
+            let mut name = [0u16; 128];
+            let mut len = name.len() as u32;
+            if RegEnumKeyExW(key, i, name.as_mut_ptr(), &mut len, null(), null_mut(), null_mut(), null_mut())
+                != ERROR_SUCCESS
+            {
+                break;
+            }
+            let sub = String::from_utf16_lossy(&name[..len as usize]);
+            if reg_string(key, &sub, "DistributionName").as_deref() == Some(distro) {
+                if let Some(base) = reg_string(key, &sub, "BasePath") {
+                    let file = reg_string(key, &sub, "VhdFileName").unwrap_or_else(|| "ext4.vhdx".into());
+                    found = Some(Path::new(base.trim_start_matches(r"\\?\")).join(file));
+                }
+                break;
+            }
+        }
+        RegCloseKey(key);
+        found.filter(|p| p.exists())
+    }
+}
+
+/// WSL has to rewrite the disk image's ACL to mount it, so the user needs
+/// WRITE_DAC on it. That is missing when the distro was imported or moved
+/// from an elevated shell (owner BUILTIN\Administrators), and WSL then fails
+/// with Wsl/Service/CreateInstance/MountDisk/HCS/E_ACCESSDENIED.
+fn can_write_dac(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    const WRITE_DAC: u32 = 0x0004_0000;
+    std::fs::OpenOptions::new().access_mode(WRITE_DAC).open(path).is_ok()
+}
+
+/// Before starting a WSL tab, offer to take ownership of a disk image WSL
+/// could not mount (one UAC prompt). Declining just starts the tab, which
+/// then shows WSL's own error.
+fn ensure_wsl_access(distro: &str) {
+    let Some(vhdx) = wsl_vhdx(distro) else { return };
+    if can_write_dac(&vhdx) {
+        return;
+    }
+    let user = match (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) {
+        (Ok(d), Ok(u)) => format!(r"{d}\{u}"),
+        (_, Ok(u)) => u,
+        _ => return,
+    };
+    let path = vhdx.to_string_lossy();
+    let ask = format!(
+        "WSL 배포판 '{distro}'의 디스크 파일에 권한이 없어 시작하지 못합니다.\n\
+         (Wsl/Service/CreateInstance/MountDisk/HCS/E_ACCESSDENIED)\n\n{path}\n\n\
+         관리자 권한으로 이 파일의 소유자를 {user}(으)로 바꿀까요?"
+    );
+    let yes = unsafe {
+        MessageBoxW(app().main, wide(&ask).as_ptr(), wide("bashtab").as_ptr(), MB_YESNO | MB_ICONWARNING)
+    } == IDYES;
+    if !yes {
+        return;
+    }
+    let params = format!("/c icacls \"{path}\" /setowner \"{user}\" /C && icacls \"{path}\" /grant \"{user}:F\" /C");
+    let (verb, file, params) = (wide("runas"), wide("cmd.exe"), wide(&params));
+    unsafe {
+        let mut sei: SHELLEXECUTEINFOW = zeroed();
+        sei.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+        sei.hwnd = app().main;
+        sei.lpVerb = verb.as_ptr();
+        sei.lpFile = file.as_ptr();
+        sei.lpParameters = params.as_ptr();
+        sei.nShow = SW_HIDE;
+        if ShellExecuteExW(&mut sei) == 0 {
+            return; // UAC cancelled
+        }
+        if !sei.hProcess.is_null() {
+            WaitForSingleObject(sei.hProcess, 30_000);
+            CloseHandle(sei.hProcess);
+        }
+    }
+    let ok = can_write_dac(&vhdx);
+    dlog(&format!("wsl access fix for {distro}: ok={ok}"));
+    if !ok {
+        message_box(&format!(
+            "권한을 바꾸지 못했습니다.\n관리자 PowerShell에서 실행해 주세요:\n\nicacls \"{path}\" /setowner \"{user}\""
+        ));
+    }
+}
+
 /// Git for Windows root: installer registry key, common install dirs,
 /// Scoop's PortableGit, then any `git.exe` on PATH (…\cmd or …\bin).
 fn git_dir() -> String {
@@ -611,6 +705,9 @@ fn hit(x: i32, y: i32) -> Hit {
 /// Start a terminal. `slot` is a home tab to turn into the terminal;
 /// with `None` a new tab is appended.
 fn start_term(slot: Option<usize>, profile: Profile, cwd: Option<&str>) {
+    if let Profile::Wsl(distro) = &profile {
+        ensure_wsl_access(distro);
+    }
     let a = app();
     let mut cmd = Command::new(&a.mintty);
     // started suspended so it joins the tab's job before it can spawn anything

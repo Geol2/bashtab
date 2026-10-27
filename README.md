@@ -20,6 +20,7 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
 - **WSL 탭**: 홈 화면이나 `+` 옆 `▾` 메뉴에서 설치된 WSL 배포판(Ubuntu 등)을 골라 같은 창에서 열기
   - 탭 앞 점 색으로 구분: 주황 = Git Bash, 보라 = WSL
   - WSL이 오류로 시작에 실패하면 탭을 남겨 오류 메시지를 보여줌
+  - 배포판 디스크(`ext4.vhdx`)의 소유자가 Administrators라서 `E_ACCESSDENIED`로 못 켜지는 경우(관리자 터미널에서 `wsl --import`/`--move` 했을 때)를 미리 감지해, UAC 확인 한 번으로 소유자를 현재 사용자로 바꿔 줌
 - 가벼운 시작 스크립트: `/etc/profile` 대신 외부 프로세스를 띄우지 않는 [`fast-rc.sh`](fast-rc.sh) 사용
   - Git Bash와 같은 프롬프트(git 브랜치 표시 포함), git 자동완성(첫 Tab에 로드), `~/.bashrc` 유지
 - 다크 탭 바, 고해상도(DPI) 대응
@@ -74,7 +75,7 @@ cargo build --release   # target/release/bashtab.exe
 `v*` 태그를 push하면 GitHub Actions가 exe를 빌드해 Release에 올리고, Scoop manifest(`bucket/bashtab.json`)의 버전과 해시를 갱신합니다.
 
 ```bash
-git tag v0.5.1 && git push origin v0.5.1
+git tag v0.5.2 && git push origin v0.5.2
 ```
 
 `BASHTAB_LOG=1` 환경 변수를 주고 실행하면 `%LOCALAPPDATA%\bashtab\debug.log`에 디버그 로그를 남깁니다.
