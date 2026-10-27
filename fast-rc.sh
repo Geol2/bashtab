@@ -41,7 +41,14 @@ __gbt_branch() {
     __GBT_BRANCH=" (${head:0:7}...)"
   fi
 }
-PROMPT_COMMAND="__gbt_branch${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+# folders cd'ed into, appended for bashtab's "recent folders" (it trims the log)
+__GBT_LAST=$PWD
+__gbt_recent() {
+  [[ $PWD == "$__GBT_LAST" ]] && return
+  __GBT_LAST=$PWD
+  [[ -n $BASHTAB_RECENT ]] && printf '%s\n' "$PWD" >> "$BASHTAB_RECENT"
+}
+PROMPT_COMMAND="__gbt_branch; __gbt_recent${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
 PS1='\[\e]0;\w\a\]\n\[\e[32m\]\u@\h \[\e[35m\]$MSYSTEM \[\e[33m\]\w\[\e[36m\]${__GBT_BRANCH}\[\e[0m\]\n$ '
 
 # git tab-completion, loaded on the first Tab (sourcing it costs ~1s here)

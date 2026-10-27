@@ -1,6 +1,6 @@
 [package]
 name = "bashtab"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 description = "Git Bash dedicated tabbed terminal for Windows (embeds mintty)"
 license = "MIT"

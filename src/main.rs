@@ -43,6 +43,7 @@ const MENU_RESTART: usize = 4;
 const MENU_KILL: usize = 5;
 const MENU_CLOSE: usize = 6;
 const MENU_FONT_DEFAULT: usize = 7;
+const MENU_ADD_FAV: usize = 8;
 const MENU_FONT: usize = 1000; // MENU_FONT + font index
 const MENU_WSL: usize = 100; // MENU_WSL + distro index
 const HK_TAB: i32 = 10; // HK_TAB + 1..=9
@@ -171,6 +172,7 @@ enum HomeItem {
     Profile(Profile),
     Fav(usize),
     AddFav,
+    Recent(usize),
     FontPick,
     FontSmaller,
     FontBigger,
@@ -193,6 +195,7 @@ struct App {
     wsl: String,
     distros: Vec<String>, // default distribution first
     favorites: Vec<String>,
+    recent: Vec<String>, // most recent first
     term_font: String, // passed to mintty as Font=; empty = mintty's own setting
     term_size: i32,    // points, mintty FontHeight=
     rc: String,
@@ -550,6 +553,66 @@ fn add_favorite(path: &str) {
     }
 }
 
+// ---- recent folders -------------------------------------------------------
+
+const MAX_RECENT: usize = 4;
+
+fn recent_file() -> PathBuf {
+    app().data_dir.join("recent.txt")
+}
+
+/// Log that fast-rc.sh appends to (one MSYS path per `cd`).
+fn recent_log() -> PathBuf {
+    app().data_dir.join("recent.log")
+}
+
+fn load_recent() -> Vec<String> {
+    std::fs::read_to_string(recent_file())
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+fn save_recent() {
+    let _ = std::fs::write(recent_file(), app().recent.join("\n"));
+}
+
+/// MSYS path (/d/work, /usr/bin, //host/share) to a Windows path.
+fn msys_to_windows(p: &str) -> String {
+    let b = p.as_bytes();
+    if b.len() >= 2 && b[0] == b'/' && b[1].is_ascii_alphabetic() && (b.len() == 2 || b[2] == b'/') {
+        let rest = p[2..].trim_start_matches('/').replace('/', "\\");
+        return format!("{}:\\{rest}", (b[1] as char).to_ascii_uppercase());
+    }
+    if p.starts_with("//") {
+        return p.replace('/', "\\");
+    }
+    // other absolute paths live under the Git install (…\usr\bin\mintty.exe)
+    let root = Path::new(&app().mintty).ancestors().nth(3).map(|r| r.to_string_lossy().into_owned()).unwrap_or_default();
+    format!("{root}{}", p.replace('/', "\\"))
+}
+
+/// Fold the folders bash logged since last time into the recent list.
+fn update_recent() {
+    let a = app();
+    let log = recent_log();
+    let Ok(text) = std::fs::read_to_string(&log) else { return };
+    let _ = std::fs::remove_file(&log);
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let path = msys_to_windows(line);
+        if path.eq_ignore_ascii_case(&a.home) || !Path::new(&path).is_dir() {
+            continue;
+        }
+        a.recent.retain(|r| !r.eq_ignore_ascii_case(&path));
+        a.recent.insert(0, path);
+    }
+    a.recent.truncate(MAX_RECENT);
+    save_recent();
+}
+
 fn pick_folder() {
     unsafe {
         let mut name = [0u16; 260];
@@ -722,6 +785,7 @@ fn start_term(slot: Option<usize>, profile: Profile, cwd: Option<&str>) {
             cmd.current_dir(cwd.unwrap_or(&a.home))
                 .args(["/usr/bin/bash", "--noprofile", "--rcfile", &a.rc, "-i"])
                 .env("MSYSTEM", "MINGW64")
+                .env("BASHTAB_RECENT", recent_log().to_string_lossy().replace('\\', "/"))
                 .env("CHERE_INVOKING", "1");
         }
         Profile::Wsl(distro) => {
@@ -872,6 +936,9 @@ fn activate(i: usize) {
         return;
     }
     a.active = i;
+    if a.tabs[i].is_home() {
+        update_recent();
+    }
     layout();
     focus_active();
     refresh();
@@ -942,14 +1009,26 @@ fn show_menu() {
     }
 }
 
-/// Right-click menu on a favorite folder.
-fn favorite_menu(fav: usize) {
+/// Right-click menu on a favorite or recent folder.
+fn folder_menu(item: HomeItem) {
     let a = app();
-    let Some(path) = a.favorites.get(fav).cloned() else { return };
+    let path = match item {
+        HomeItem::Fav(f) => a.favorites.get(f).cloned(),
+        HomeItem::Recent(r) => a.recent.get(r).cloned(),
+        _ => None,
+    };
+    let Some(path) = path else { return };
     let mut items = vec![(MENU_GIT, "Git Bash에서 열기".to_string())];
     wsl_menu_items(&mut items, "에서 열기", "");
     items.push((0, String::new()));
-    items.push((MENU_REMOVE, "즐겨찾기에서 제거".into()));
+    if let HomeItem::Recent(_) = item {
+        if !a.favorites.iter().any(|f| f.eq_ignore_ascii_case(&path)) {
+            items.push((MENU_ADD_FAV, "즐겨찾기에 추가".into()));
+        }
+        items.push((MENU_REMOVE, "최근 목록에서 제거".into()));
+    } else {
+        items.push((MENU_REMOVE, "즐겨찾기에서 제거".into()));
+    }
     let cmd = unsafe {
         let mut pt: POINT = zeroed();
         GetCursorPos(&mut pt);
@@ -958,9 +1037,18 @@ fn favorite_menu(fav: usize) {
     let slot = Some(a.active);
     match cmd {
         MENU_GIT => start_term(slot, Profile::GitBash, Some(&path)),
+        MENU_ADD_FAV => add_favorite(&path),
         MENU_REMOVE => {
-            a.favorites.remove(fav);
-            save_favorites();
+            match item {
+                HomeItem::Recent(r) => {
+                    a.recent.remove(r);
+                    save_recent();
+                }
+                _ => {
+                    a.favorites.retain(|f| *f != path);
+                    save_favorites();
+                }
+            }
             refresh();
         }
         c if c >= MENU_WSL => {
@@ -984,6 +1072,11 @@ fn home_click(i: usize) {
             }
         }
         HomeItem::AddFav => pick_folder(),
+        HomeItem::Recent(r) => {
+            if let Some(path) = a.recent.get(r).cloned() {
+                start_term(slot, Profile::GitBash, Some(&path));
+            }
+        }
         HomeItem::FontPick => font_menu(),
         HomeItem::FontSmaller => change_font_size(-1),
         HomeItem::FontBigger => change_font_size(1),
@@ -1373,6 +1466,27 @@ unsafe fn paint_home(dc: HDC, body: &RECT) {
     }
     y += scale(28);
 
+    // recent folders (cd'ed into in Git Bash tabs), two per row
+    if !a.recent.is_empty() {
+        section(dc, "최근 폴더", x0, y, colw);
+        y += scale(26);
+        let (gap, h) = (scale(12), scale(40));
+        let w = (colw - gap) / 2;
+        for (i, path) in a.recent.iter().enumerate() {
+            let left = x0 + (i as i32 % 2) * (w + gap);
+            let top = y + (i as i32 / 2) * (h + scale(4));
+            let r = RECT { left, top, right: left + w, bottom: top + h };
+            let hovered = a.hover == Hit::Home(a.home_items.len());
+            round_rect(dc, &r, scale(10), if hovered { C_CARD_HOVER } else { C_CARD }, Some(C_CARD_EDGE));
+            let name = RECT { left: r.left + scale(14), right: r.left + scale(14) + scale(120), ..r };
+            text(dc, a.fonts.bold, folder_name(path), &name, C_TEXT, DT_LEFT | DT_END_ELLIPSIS | ONE_LINE);
+            let full = RECT { left: name.right + scale(8), right: r.right - scale(14), ..r };
+            text(dc, a.fonts.small, path, &full, C_DIM, DT_LEFT | DT_PATH_ELLIPSIS | ONE_LINE);
+            a.home_items.push((r, HomeItem::Recent(i)));
+        }
+        y += ((a.recent.len() as i32 + 1) / 2) * (h + scale(4)) + scale(24);
+    }
+
     // terminal font: name, preview in that font, size -/+ and a picker
     section(dc, "글꼴 (새 탭부터 적용)", x0, y, colw);
     y += scale(26);
@@ -1703,8 +1817,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 Hit::Plus | Hit::Menu => show_menu(),
                 Hit::Tab(i) | Hit::Close(i) => tab_menu(i),
                 Hit::Home(i) => {
-                    if let Some((_, HomeItem::Fav(f))) = a.home_items.get(i).cloned() {
-                        favorite_menu(f);
+                    if let Some((_, item @ (HomeItem::Fav(_) | HomeItem::Recent(_)))) = a.home_items.get(i).cloned() {
+                        folder_menu(item);
                     }
                 }
                 _ => {}
@@ -1806,6 +1920,7 @@ fn main() {
                 .replace('\\', "/"),
             distros: wsl_distros(),
             favorites: Vec::new(),
+            recent: Vec::new(),
             term_font: String::new(),
             term_size: DEFAULT_FONT_SIZE,
             rc: rc.to_string_lossy().replace('\\', "/"),
@@ -1830,6 +1945,7 @@ fn main() {
             home_items: Vec::new(),
         }));
         app().favorites = load_favorites();
+        app().recent = load_recent();
         load_settings();
 
         let hinst = GetModuleHandleW(null());

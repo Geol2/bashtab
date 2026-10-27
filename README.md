@@ -16,6 +16,7 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
   - 즐겨찾는 폴더: 폴더를 끌어다 놓거나 "+ 폴더 추가"로 등록, 클릭하면 그 폴더에서 Git Bash, 우클릭하면 WSL로 열기 / 제거
   - **글꼴**: 설치된 고정폭 글꼴과 크기를 골라 터미널 글꼴로 사용 (기본 Consolas 11pt, 새 탭부터 적용)
     - "mintty 기본 설정 사용"을 고르면 `~/.minttyrc` 설정을 그대로 씀
+  - **최근 폴더**: Git Bash 탭에서 `cd`로 이동한 폴더 4개를 최신 순으로 보여 줌. 클릭하면 그 폴더에서 Git Bash, 우클릭하면 WSL로 열기 / 즐겨찾기에 추가 / 제거
   - 단축키 안내
 - **WSL 탭**: 홈 화면이나 `+` 옆 `▾` 메뉴에서 설치된 WSL 배포판(Ubuntu 등)을 골라 같은 창에서 열기
   - 탭 앞 점 색으로 구분: 주황 = Git Bash, 보라 = WSL
@@ -75,11 +76,11 @@ cargo build --release   # target/release/bashtab.exe
 `v*` 태그를 push하면 GitHub Actions가 exe를 빌드해 Release에 올리고, Scoop manifest(`bucket/bashtab.json`)의 버전과 해시를 갱신합니다.
 
 ```bash
-git tag v0.5.2 && git push origin v0.5.2
+git tag v0.5.3 && git push origin v0.5.3
 ```
 
 `BASHTAB_LOG=1` 환경 변수를 주고 실행하면 `%LOCALAPPDATA%\bashtab\debug.log`에 디버그 로그를 남깁니다.
-즐겨찾는 폴더는 `%LOCALAPPDATA%\bashtab\favorites.txt`에 한 줄에 하나씩, 글꼴 설정은 `settings.ini`(`font=`, `font_size=`)에 저장됩니다.
+즐겨찾는 폴더는 `%LOCALAPPDATA%\bashtab\favorites.txt`에 한 줄에 하나씩, 최근 폴더는 `recent.txt`에, 글꼴 설정은 `settings.ini`(`font=`, `font_size=`)에 저장됩니다.
 
 ## 아이콘
 
