@@ -42,6 +42,8 @@ const MENU_REMOVE: usize = 3;
 const MENU_RESTART: usize = 4;
 const MENU_KILL: usize = 5;
 const MENU_CLOSE: usize = 6;
+const MENU_FONT_DEFAULT: usize = 7;
+const MENU_FONT: usize = 1000; // MENU_FONT + font index
 const MENU_WSL: usize = 100; // MENU_WSL + distro index
 const HK_TAB: i32 = 10; // HK_TAB + 1..=9
 // not exported by windows-sys
@@ -169,6 +171,9 @@ enum HomeItem {
     Profile(Profile),
     Fav(usize),
     AddFav,
+    FontPick,
+    FontSmaller,
+    FontBigger,
 }
 
 struct Fonts {
@@ -188,6 +193,8 @@ struct App {
     wsl: String,
     distros: Vec<String>, // default distribution first
     favorites: Vec<String>,
+    term_font: String, // passed to mintty as Font=; empty = mintty's own setting
+    term_size: i32,    // points, mintty FontHeight=
     rc: String,
     home: String,
     data_dir: PathBuf,
@@ -319,6 +326,103 @@ fn message_box(text: &str) {
     unsafe {
         MessageBoxW(app().main, wide(text).as_ptr(), wide("bashtab").as_ptr(), MB_ICONERROR);
     }
+}
+
+// ---- settings -------------------------------------------------------------
+
+const DEFAULT_FONT: &str = "Consolas";
+const DEFAULT_FONT_SIZE: i32 = 11;
+const MIN_FONT_SIZE: i32 = 6;
+const MAX_FONT_SIZE: i32 = 32;
+
+fn settings_file() -> PathBuf {
+    app().data_dir.join("settings.ini")
+}
+
+/// `key=value` lines; unknown keys are ignored.
+fn load_settings() {
+    let a = app();
+    a.term_font = DEFAULT_FONT.into();
+    a.term_size = DEFAULT_FONT_SIZE;
+    for line in std::fs::read_to_string(settings_file()).unwrap_or_default().lines() {
+        let Some((k, v)) = line.split_once('=') else { continue };
+        match k.trim() {
+            "font" => a.term_font = v.trim().to_string(),
+            "font_size" => {
+                if let Ok(n) = v.trim().parse::<i32>() {
+                    a.term_size = n.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn save_settings() {
+    let a = app();
+    let _ = std::fs::write(settings_file(), format!("font={}\nfont_size={}\n", a.term_font, a.term_size));
+}
+
+unsafe extern "system" fn font_cb(lf: *const LOGFONTW, _tm: *const TEXTMETRICW, kind: u32, lp: LPARAM) -> i32 {
+    let out = &mut *(lp as *mut Vec<String>);
+    let lf = &*lf;
+    let end = lf.lfFaceName.iter().position(|&c| c == 0).unwrap_or(lf.lfFaceName.len());
+    let name = String::from_utf16_lossy(&lf.lfFaceName[..end]);
+    // fixed-pitch TrueType/OpenType only; '@' names are vertical CJK variants
+    let fixed = lf.lfPitchAndFamily & 3 == FIXED_PITCH as u8;
+    if fixed && kind & RASTER_FONTTYPE == 0 && !name.starts_with('@') && !out.contains(&name) {
+        out.push(name);
+    }
+    1
+}
+
+/// Installed monospace fonts, sorted by name.
+fn mono_fonts() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    unsafe {
+        let hdc = GetDC(null_mut());
+        let mut lf: LOGFONTW = zeroed();
+        lf.lfCharSet = DEFAULT_CHARSET as u8;
+        EnumFontFamiliesExW(hdc, &lf, Some(font_cb), &mut out as *mut _ as LPARAM, 0);
+        ReleaseDC(null_mut(), hdc);
+    }
+    out.sort_by_key(|s| s.to_lowercase());
+    out
+}
+
+/// Font picker: "mintty default" plus every installed monospace font.
+fn font_menu() {
+    let a = app();
+    let fonts = mono_fonts();
+    let mut items = vec![(MENU_FONT_DEFAULT, "mintty 기본 설정 사용 (~/.minttyrc)".to_string()), (0, String::new())];
+    items.extend(fonts.iter().enumerate().map(|(i, f)| (MENU_FONT + i, f.clone())));
+    let checked = if a.term_font.is_empty() {
+        MENU_FONT_DEFAULT
+    } else {
+        fonts.iter().position(|f| f.eq_ignore_ascii_case(&a.term_font)).map_or(0, |i| MENU_FONT + i)
+    };
+    let cmd = unsafe {
+        let mut pt: POINT = zeroed();
+        GetCursorPos(&mut pt);
+        popup_checked(&items, pt, checked)
+    };
+    match cmd {
+        MENU_FONT_DEFAULT => a.term_font.clear(),
+        c if c >= MENU_FONT => match fonts.get(c - MENU_FONT) {
+            Some(f) => a.term_font = f.clone(),
+            None => return,
+        },
+        _ => return,
+    }
+    save_settings();
+    refresh();
+}
+
+fn change_font_size(delta: i32) {
+    let a = app();
+    a.term_size = (a.term_size + delta).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+    save_settings();
+    refresh();
 }
 
 // ---- favorites ------------------------------------------------------------
@@ -513,6 +617,9 @@ fn start_term(slot: Option<usize>, profile: Profile, cwd: Option<&str>) {
     cmd.creation_flags(CREATE_SUSPENDED);
     cmd.args(["--nodaemon", "-w", "hide", "-B", "void", "-o", "SwitchShortcuts=no", "-o", "CtrlShiftShortcuts=yes"])
         .args(["-t", profile.label()]);
+    if !a.term_font.is_empty() {
+        cmd.args(["-o", &format!("Font={}", a.term_font), "-o", &format!("FontHeight={}", a.term_size)]);
+    }
     match &profile {
         Profile::GitBash => {
             cmd.current_dir(cwd.unwrap_or(&a.home))
@@ -684,12 +791,18 @@ fn spawn_default_wsl() {
 
 /// Builds a popup menu, shows it at `pt` (screen) and returns the chosen id.
 unsafe fn popup(items: &[(usize, String)], pt: POINT) -> usize {
+    popup_checked(items, pt, 0)
+}
+
+/// Like `popup`, with a check mark on the item whose id is `checked`.
+unsafe fn popup_checked(items: &[(usize, String)], pt: POINT, checked: usize) -> usize {
     let m = CreatePopupMenu();
     for (id, label) in items {
         if *id == 0 {
             AppendMenuW(m, MF_SEPARATOR, 0, null());
         } else {
-            AppendMenuW(m, MF_STRING, *id, wide(label).as_ptr());
+            let flags = if *id == checked { MF_STRING | MF_CHECKED } else { MF_STRING };
+            AppendMenuW(m, flags, *id, wide(label).as_ptr());
         }
     }
     let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, app().main, null());
@@ -774,6 +887,9 @@ fn home_click(i: usize) {
             }
         }
         HomeItem::AddFav => pick_folder(),
+        HomeItem::FontPick => font_menu(),
+        HomeItem::FontSmaller => change_font_size(-1),
+        HomeItem::FontBigger => change_font_size(1),
     }
 }
 
@@ -1159,6 +1275,44 @@ unsafe fn paint_home(dc: HDC, body: &RECT) {
         y += scale(20);
     }
     y += scale(28);
+
+    // terminal font: name, preview in that font, size -/+ and a picker
+    section(dc, "글꼴 (새 탭부터 적용)", x0, y, colw);
+    y += scale(26);
+    let r = RECT { left: x0, top: y, right: x1, bottom: y + scale(56) };
+    round_rect(dc, &r, scale(12), C_CARD, Some(C_CARD_EDGE));
+    let cy = (r.top + r.bottom) / 2;
+    let btn = |left: i32, w: i32| RECT { left, top: cy - scale(15), right: left + w, bottom: cy + scale(15) };
+    let pick = btn(r.right - scale(12) - scale(96), scale(96));
+    let bigger = btn(pick.left - scale(10) - scale(32), scale(32));
+    let smaller = btn(bigger.left - scale(4) - scale(32), scale(32));
+    for (rect, item, label, font) in [
+        (smaller, HomeItem::FontSmaller, "\u{E738}", a.fonts.icons),
+        (bigger, HomeItem::FontBigger, "\u{E710}", a.fonts.icons),
+        (pick, HomeItem::FontPick, "글꼴 변경", a.fonts.ui),
+    ] {
+        let hovered = a.hover == Hit::Home(a.home_items.len());
+        round_rect(dc, &rect, scale(8), if hovered { C_CARD_HOVER } else { C_ACTIVE }, Some(C_CARD_EDGE));
+        text(dc, font, label, &rect, C_TEXT, DT_CENTER | ONE_LINE);
+        a.home_items.push((rect, item));
+    }
+    let name = if a.term_font.is_empty() { "mintty 기본 설정".to_string() } else { format!("{} · {}pt", a.term_font, a.term_size) };
+    let name_r = RECT { left: r.left + scale(16), right: r.left + scale(16) + scale(190), ..r };
+    text(dc, a.fonts.bold, &name, &name_r, C_TEXT, DT_LEFT | DT_END_ELLIPSIS | ONE_LINE);
+    if !a.term_font.is_empty() {
+        // preview at the size mintty will use (points -> pixels at this DPI)
+        let px = a.term_size * a.dpi as i32 / 72;
+        let preview = CreateFontW(
+            -px, 0, 0, 0, 400, 0, 0, 0,
+            DEFAULT_CHARSET as _, OUT_DEFAULT_PRECIS as _, CLIP_DEFAULT_PRECIS as _,
+            CLEARTYPE_QUALITY as _, (FIXED_PITCH | FF_MODERN) as _,
+            wide(&a.term_font).as_ptr(),
+        );
+        let pr = RECT { left: name_r.right + scale(8), right: smaller.left - scale(12), ..r };
+        text(dc, preview, "user@PC MINGW64 ~/project (main) $ ls 한글", &pr, rgb(35, 209, 139), DT_LEFT | DT_END_ELLIPSIS | ONE_LINE);
+        DeleteObject(preview as _);
+    }
+    y += scale(56) + scale(28);
 
     // shortcuts
     section(dc, "단축키", x0, y, colw);
@@ -1555,6 +1709,8 @@ fn main() {
                 .replace('\\', "/"),
             distros: wsl_distros(),
             favorites: Vec::new(),
+            term_font: String::new(),
+            term_size: DEFAULT_FONT_SIZE,
             rc: rc.to_string_lossy().replace('\\', "/"),
             home: std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into()),
             data_dir,
@@ -1577,6 +1733,7 @@ fn main() {
             home_items: Vec::new(),
         }));
         app().favorites = load_favorites();
+        load_settings();
 
         let hinst = GetModuleHandleW(null());
         let class = wide("BashtabWindow");
