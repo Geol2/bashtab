@@ -25,6 +25,10 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
   - 배포판 디스크(`ext4.vhdx`)의 소유자가 Administrators라서 `E_ACCESSDENIED`로 못 켜지는 경우(관리자 터미널에서 `wsl --import`/`--move` 했을 때)를 미리 감지해, UAC 확인 한 번으로 소유자를 현재 사용자로 바꿔 줌
 - 가벼운 시작 스크립트: `/etc/profile` 대신 외부 프로세스를 띄우지 않는 [`fast-rc.sh`](fast-rc.sh) 사용
   - Git Bash와 같은 프롬프트(git 브랜치 표시 포함), git 자동완성(첫 Tab에 로드), `~/.bashrc` 유지
+- **자주 쓰는 명령 패널**: 터미널 탭 오른쪽에 자주 쓰는 명령을 모아 두고 클릭하면 그 탭에서 바로 실행
+  - 우클릭: 실행 / 입력만 하기(Enter 없이) / 목록 편집
+  - "편집"을 누르면 메모장으로 `commands.txt`가 열리고, 저장하면 바로 반영. 한 줄에 하나씩 `[이름] 명령` 또는 `명령`
+  - 탭 바의 명령 버튼(최소화 버튼 왼쪽)으로 패널 열기/닫기
 - 다크 탭 바, 고해상도(DPI) 대응
 
 ## 단축키
@@ -36,6 +40,7 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
 | Ctrl+Shift+L | 새 WSL 탭 (기본 배포판) |
 | `▾` / `+` 우클릭 | 셸 선택 메뉴 (홈 / Git Bash / WSL 배포판) |
 | Ctrl+Shift+W / 휠클릭 / × | 탭 닫기 |
+| 명령 패널 클릭 / 우클릭 | 그 명령 실행 / 실행·입력만·편집 메뉴 |
 | 탭 우클릭 | 최근·즐겨찾는 폴더로 이동 / 다시 시작 / 강제 종료 / 탭 닫기 |
 | Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 탭 |
 | Alt+1~9 | N번째 탭 (9 = 마지막) |
@@ -77,11 +82,11 @@ cargo build --release   # target/release/bashtab.exe
 `v*` 태그를 push하면 GitHub Actions가 exe를 빌드해 Release에 올리고, Scoop manifest(`bucket/bashtab.json`)의 버전과 해시를 갱신합니다.
 
 ```bash
-git tag v0.5.4 && git push origin v0.5.4
+git tag v0.5.5 && git push origin v0.5.5
 ```
 
 `BASHTAB_LOG=1` 환경 변수를 주고 실행하면 `%LOCALAPPDATA%\bashtab\debug.log`에 디버그 로그를 남깁니다.
-즐겨찾는 폴더는 `%LOCALAPPDATA%\bashtab\favorites.txt`에 한 줄에 하나씩, 최근 폴더는 `recent.txt`에, 글꼴 설정은 `settings.ini`(`font=`, `font_size=`)에 저장됩니다.
+즐겨찾는 폴더는 `%LOCALAPPDATA%\bashtab\favorites.txt`에 한 줄에 하나씩, 최근 폴더는 `recent.txt`에, 자주 쓰는 명령은 `commands.txt`에, 글꼴·패널 설정은 `settings.ini`(`font=`, `font_size=`, `commands_panel=`)에 저장됩니다.
 
 ## 아이콘
 

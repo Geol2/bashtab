@@ -44,6 +44,9 @@ const MENU_KILL: usize = 5;
 const MENU_CLOSE: usize = 6;
 const MENU_FONT_DEFAULT: usize = 7;
 const MENU_ADD_FAV: usize = 8;
+const MENU_RUN: usize = 9;
+const MENU_TYPE: usize = 10;
+const MENU_EDIT_CMDS: usize = 11;
 const MENU_FONT: usize = 1000; // MENU_FONT + font index
 const MENU_WSL: usize = 100; // MENU_WSL + distro index
 const MENU_GO: usize = 2000; // MENU_GO + index into jump_folders()
@@ -167,6 +170,9 @@ enum Hit {
     Max,
     CloseWin,
     Home(usize), // index into App::home_items
+    Cmds,        // command panel toggle in the tab bar
+    Cmd(usize),  // index into App::cmds
+    CmdEdit,
 }
 
 #[derive(Clone)]
@@ -198,6 +204,9 @@ struct App {
     distros: Vec<String>, // default distribution first
     favorites: Vec<String>,
     recent: Vec<String>, // most recent first
+    cmds: Vec<(String, String)>, // (name, command) from commands.txt
+    cmds_mtime: Option<std::time::SystemTime>,
+    cmds_open: bool, // panel shown beside terminal tabs
     term_font: String, // passed to mintty as Font=; empty = mintty's own setting
     term_size: i32,    // points, mintty FontHeight=
     rc: String,
@@ -443,10 +452,12 @@ fn load_settings() {
     let a = app();
     a.term_font = DEFAULT_FONT.into();
     a.term_size = DEFAULT_FONT_SIZE;
+    a.cmds_open = true;
     for line in std::fs::read_to_string(settings_file()).unwrap_or_default().lines() {
         let Some((k, v)) = line.split_once('=') else { continue };
         match k.trim() {
             "font" => a.term_font = v.trim().to_string(),
+            "commands_panel" => a.cmds_open = v.trim() != "0",
             "font_size" => {
                 if let Ok(n) = v.trim().parse::<i32>() {
                     a.term_size = n.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
@@ -459,7 +470,90 @@ fn load_settings() {
 
 fn save_settings() {
     let a = app();
-    let _ = std::fs::write(settings_file(), format!("font={}\nfont_size={}\n", a.term_font, a.term_size));
+    let text = format!("font={}\nfont_size={}\ncommands_panel={}\n", a.term_font, a.term_size, a.cmds_open as i32);
+    let _ = std::fs::write(settings_file(), text);
+}
+
+// ---- frequently used commands -----------------------------------------------
+
+const DEFAULT_COMMANDS: &str = "\
+# bashtab 자주 쓰는 명령: 한 줄에 하나씩 적어요.
+# [이름] 명령  형식으로 이름을 붙일 수 있어요. 저장하면 바로 반영돼요.
+[상태] git status
+[최근 커밋] git log --oneline --graph -15
+[브랜치] git branch -a
+[당겨오기] git pull
+";
+
+fn commands_file() -> PathBuf {
+    app().data_dir.join("commands.txt")
+}
+
+/// Reload commands.txt when it changed (checked from the poll timer).
+fn load_commands() {
+    let a = app();
+    let path = commands_file();
+    if !path.exists() {
+        let _ = std::fs::write(&path, DEFAULT_COMMANDS);
+    }
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    if mtime == a.cmds_mtime {
+        return;
+    }
+    a.cmds_mtime = mtime;
+    let bytes = std::fs::read(&path).unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes);
+    a.cmds = text
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| match l.strip_prefix('[').and_then(|r| r.split_once(']')) {
+            Some((name, cmd)) => (name.trim().to_string(), cmd.trim().to_string()),
+            None => (l.to_string(), l.to_string()),
+        })
+        .filter(|(_, c)| !c.is_empty())
+        .collect();
+    refresh();
+}
+
+fn edit_commands() {
+    let _ = Command::new("notepad.exe").arg(commands_file()).spawn();
+}
+
+fn toggle_commands() {
+    let a = app();
+    a.cmds_open = !a.cmds_open;
+    save_settings();
+    layout();
+    refresh();
+}
+
+fn run_command(i: usize, run: bool) {
+    let a = app();
+    let Some((_, cmd)) = a.cmds.get(i).cloned() else { return };
+    type_in_tab(a.active, &cmd, run);
+    focus_active();
+}
+
+fn command_menu(i: usize) {
+    let items = vec![
+        (MENU_RUN, "실행".to_string()),
+        (MENU_TYPE, "입력만 하기 (Enter 없이)".into()),
+        (0, String::new()),
+        (MENU_EDIT_CMDS, "목록 편집…".into()),
+    ];
+    let cmd = unsafe {
+        let mut pt: POINT = zeroed();
+        GetCursorPos(&mut pt);
+        popup(&items, pt)
+    };
+    match cmd {
+        MENU_RUN => run_command(i, true),
+        MENU_TYPE => run_command(i, false),
+        MENU_EDIT_CMDS => edit_commands(),
+        _ => focus_active(),
+    }
 }
 
 unsafe extern "system" fn font_cb(lf: *const LOGFONTW, _tm: *const TEXTMETRICW, kind: u32, lp: LPARAM) -> i32 {
@@ -696,7 +790,7 @@ fn tabs_left() -> i32 {
 
 fn tab_w() -> i32 {
     let n = app().tabs.len().max(1) as i32;
-    let avail = client_rect().right - tabs_left() - plus_w() - menu_w() - 3 * caption_w() - scale(48);
+    let avail = client_rect().right - tabs_left() - plus_w() - menu_w() - 3 * caption_w() - cmds_btn_w() - scale(56);
     (avail / n).clamp(scale(72), scale(220))
 }
 
@@ -725,6 +819,41 @@ fn menu_rect() -> RECT {
     RECT { left: p.right, right: p.right + menu_w(), ..p }
 }
 
+fn cmds_btn_w() -> i32 {
+    scale(34)
+}
+
+/// Command panel toggle, left of the caption buttons.
+fn cmds_btn_rect() -> RECT {
+    let right = caption_rect(0).left - scale(8);
+    let p = plus_rect();
+    RECT { left: right - cmds_btn_w(), right, ..p }
+}
+
+fn cmds_visible() -> bool {
+    let a = app();
+    a.cmds_open && a.tabs.get(a.active).is_some_and(|t| !t.is_home())
+}
+
+/// The command panel on the right of terminal tabs.
+fn cmds_panel() -> RECT {
+    let rc = client_rect();
+    let w = scale(240).min(rc.right / 2);
+    RECT { left: rc.right - w, top: bar_h(), right: rc.right, bottom: rc.bottom }
+}
+
+fn cmd_edit_rect() -> RECT {
+    let p = cmds_panel();
+    let top = p.top + scale(10);
+    RECT { left: p.right - scale(12) - scale(52), top, right: p.right - scale(12), bottom: top + scale(26) }
+}
+
+fn cmd_row(i: usize) -> RECT {
+    let p = cmds_panel();
+    let top = p.top + scale(46) + i as i32 * scale(52);
+    RECT { left: p.left + scale(10), top, right: p.right - scale(10), bottom: top + scale(46) }
+}
+
 /// Minimize, maximize/restore, close: right-aligned, full bar height.
 fn caption_rect(n: i32) -> RECT {
     let right = client_rect().right - (2 - n) * caption_w();
@@ -738,6 +867,15 @@ fn inside(r: &RECT, x: i32, y: i32) -> bool {
 fn hit(x: i32, y: i32) -> Hit {
     let a = app();
     if y >= bar_h() {
+        if cmds_visible() && inside(&cmds_panel(), x, y) {
+            if inside(&cmd_edit_rect(), x, y) {
+                return Hit::CmdEdit;
+            }
+            if let Some(i) = (0..a.cmds.len()).find(|&i| inside(&cmd_row(i), x, y)) {
+                return Hit::Cmd(i);
+            }
+            return Hit::None;
+        }
         if a.tabs.get(a.active).is_some_and(Tab::is_home) {
             if let Some(i) = a.home_items.iter().position(|(r, _)| inside(r, x, y)) {
                 return Hit::Home(i);
@@ -761,6 +899,9 @@ fn hit(x: i32, y: i32) -> Hit {
     }
     if inside(&menu_rect(), x, y) {
         return Hit::Menu;
+    }
+    if inside(&cmds_btn_rect(), x, y) {
+        return Hit::Cmds;
     }
     Hit::None
 }
@@ -896,6 +1037,7 @@ fn layout() {
     let a = app();
     let rc = client_rect();
     let top = bar_h();
+    let width = if cmds_visible() { cmds_panel().left } else { rc.right };
     let windows: Vec<(HWND, bool)> =
         a.tabs.iter().enumerate().filter(|(_, t)| !t.hwnd.is_null()).map(|(i, t)| (t.hwnd, i == a.active)).collect();
     unsafe {
@@ -911,7 +1053,7 @@ fn layout() {
                     null_mut(),
                     0,
                     top,
-                    rc.right,
+                    width,
                     (rc.bottom - top).max(0),
                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
                 );
@@ -1073,8 +1215,7 @@ fn folder_menu(item: HomeItem) {
     }
 }
 
-/// Make the shell in terminal tab `i` cd to `path` by typing the command
-/// into mintty (Ctrl+E Ctrl+U first clears whatever is on the prompt line).
+/// Make the shell in terminal tab `i` cd to `path` by typing the command.
 fn cd_in_tab(i: usize, path: &str) {
     let Some(t) = app().tabs.get(i) else { return };
     let dir = match &t.profile {
@@ -1089,7 +1230,17 @@ fn cd_in_tab(i: usize, path: &str) {
         }
         None => return,
     };
-    let line = format!("\x05\x15cd '{}'\r", dir.replace('\'', r"'\''"));
+    type_in_tab(i, &format!("cd '{}'", dir.replace('\'', r"'\''")), true);
+}
+
+/// Type `text` on the prompt line of terminal tab `i` (Ctrl+E Ctrl+U first
+/// clears whatever is there), pressing Enter if `run`.
+fn type_in_tab(i: usize, text: &str, run: bool) {
+    let Some(t) = app().tabs.get(i) else { return };
+    if t.hwnd.is_null() {
+        return;
+    }
+    let line = format!("\x05\x15{text}{}", if run { "\r" } else { "" });
     for c in line.encode_utf16() {
         unsafe { PostMessageW(t.hwnd, WM_CHAR, c as WPARAM, 0) };
     }
@@ -1232,6 +1383,7 @@ fn poll() {
     let a = app();
     let mut changed = false;
     let mut relayout = false;
+    load_commands();
 
     for t in a.tabs.iter_mut() {
         let Some(child) = t.child.as_mut() else { continue };
@@ -1435,6 +1587,12 @@ unsafe fn paint_bar(dc: HDC, rc: &RECT) {
     }
     text(dc, a.fonts.icons, "\u{E70D}", &mr, C_DIM, DT_CENTER | ONE_LINE);
 
+    let cb = cmds_btn_rect();
+    if a.hover == Hit::Cmds || a.cmds_open {
+        round_rect(dc, &cb, scale(8), C_HOVER, None);
+    }
+    text(dc, a.fonts.icons, "\u{E756}", &cb, if a.cmds_open { C_TEXT } else { C_DIM }, DT_CENTER | ONE_LINE);
+
     // caption buttons
     let glyph = if a.focused { C_TEXT } else { C_FAINT };
     let max_glyph = if is_maximized() { "\u{E923}" } else { "\u{E922}" };
@@ -1446,6 +1604,40 @@ unsafe fn paint_bar(dc: HDC, rc: &RECT) {
         }
         let c = if hovered && h == Hit::CloseWin { rgb(255, 255, 255) } else { glyph };
         text(dc, a.fonts.icons, g, &r, c, DT_CENTER | ONE_LINE);
+    }
+}
+
+/// Frequently used commands beside a terminal tab: click runs one in it.
+unsafe fn paint_cmds(dc: HDC) {
+    let a = app();
+    let p = cmds_panel();
+    fill(dc, &p, C_BAR);
+    fill(dc, &RECT { right: p.left + 1, ..p }, C_SEP);
+    let head = RECT { left: p.left + scale(14), top: p.top + scale(10), right: p.right, bottom: p.top + scale(36) };
+    text(dc, a.fonts.bold, "자주 쓰는 명령", &head, C_TEXT, DT_LEFT | ONE_LINE);
+    let er = cmd_edit_rect();
+    if a.hover == Hit::CmdEdit {
+        round_rect(dc, &er, scale(6), C_HOVER, None);
+    }
+    text(dc, a.fonts.ui, "편집", &er, C_DIM, DT_CENTER | ONE_LINE);
+
+    if a.cmds.is_empty() {
+        let r = RECT { top: p.top + scale(46), bottom: p.top + scale(120), ..cmd_row(0) };
+        let hint = "'편집'을 눌러\n한 줄에 하나씩 적어 주세요";
+        text(dc, a.fonts.small, hint, &r, C_FAINT, DT_CENTER | DT_WORDBREAK | DT_NOPREFIX);
+        return;
+    }
+    for (i, (name, cmd)) in a.cmds.iter().enumerate() {
+        let r = cmd_row(i);
+        if r.top >= p.bottom {
+            break;
+        }
+        let hovered = a.hover == Hit::Cmd(i);
+        round_rect(dc, &r, scale(8), if hovered { C_CARD_HOVER } else { C_CARD }, Some(C_CARD_EDGE));
+        let l1 = RECT { left: r.left + scale(12), top: r.top + scale(4), right: r.right - scale(10), bottom: r.top + scale(24) };
+        text(dc, a.fonts.ui, name, &l1, C_TEXT, DT_LEFT | DT_END_ELLIPSIS | ONE_LINE);
+        let l2 = RECT { top: r.top + scale(23), bottom: r.bottom - scale(4), ..l1 };
+        text(dc, a.fonts.mono, cmd, &l2, C_DIM, DT_LEFT | DT_END_ELLIPSIS | ONE_LINE);
     }
 }
 
@@ -1644,6 +1836,9 @@ unsafe fn paint(hwnd: HWND) {
                 let msg = format!("{} 시작 중…", t.title);
                 text(mem, a.fonts.ui, &msg, &body, C_DIM, DT_CENTER | ONE_LINE);
             }
+            if cmds_visible() {
+                paint_cmds(mem);
+            }
         }
         None => fill(mem, &body, C_TERM_BG),
     }
@@ -1835,7 +2030,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let mut pt: POINT = zeroed();
             GetCursorPos(&mut pt);
             ScreenToClient(hwnd, &mut pt);
-            if matches!(hit(pt.x, pt.y), Hit::Home(_)) {
+            if matches!(hit(pt.x, pt.y), Hit::Home(_) | Hit::Cmd(_) | Hit::CmdEdit) {
                 SetCursor(LoadCursorW(null_mut(), IDC_HAND));
                 return 1;
             }
@@ -1860,6 +2055,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 Hit::Close(i) => close_tab(i),
                 Hit::Plus => new_home_tab(),
                 Hit::Menu => show_menu(),
+                Hit::Cmds => toggle_commands(),
                 _ => {}
             }
             return 0;
@@ -1877,6 +2073,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         PostMessageW(hwnd, WM_CLOSE, 0, 0);
                     }
                     Hit::Home(i) => home_click(i),
+                    Hit::Cmd(i) => run_command(i, true),
+                    Hit::CmdEdit => edit_commands(),
                     _ => {}
                 }
             }
@@ -1888,6 +2086,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             match hit(x, y) {
                 Hit::Plus | Hit::Menu => show_menu(),
                 Hit::Tab(i) | Hit::Close(i) => tab_menu(i),
+                Hit::Cmd(i) => command_menu(i),
                 Hit::Home(i) => {
                     if let Some((_, item @ (HomeItem::Fav(_) | HomeItem::Recent(_)))) = a.home_items.get(i).cloned() {
                         folder_menu(item);
@@ -1993,6 +2192,9 @@ fn main() {
             distros: wsl_distros(),
             favorites: Vec::new(),
             recent: Vec::new(),
+            cmds: Vec::new(),
+            cmds_mtime: None,
+            cmds_open: true,
             term_font: String::new(),
             term_size: DEFAULT_FONT_SIZE,
             rc: rc.to_string_lossy().replace('\\', "/"),
