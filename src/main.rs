@@ -222,6 +222,16 @@ struct App {
     closing: bool, // window close requested, waiting for tabs to exit
     focused: bool,
     home_items: Vec<(RECT, HomeItem)>, // rebuilt on every paint of the home tab
+    drag: Option<Drag>,
+}
+
+/// A tab being dragged to a new position.
+struct Drag {
+    idx: usize,  // current index of the dragged tab
+    grab: i32,   // cursor x minus the tab's left edge at press
+    start: i32,  // cursor x at press
+    x: i32,      // latest cursor x
+    moving: bool, // past the drag threshold
 }
 
 // Single-threaded Win32 UI; the window procedure is the only user.
@@ -798,6 +808,45 @@ fn tab_rect(i: usize) -> RECT {
     let w = tab_w();
     let x = tabs_left() + i as i32 * w;
     RECT { left: x, top: tab_top(), right: x + w, bottom: bar_h() }
+}
+
+/// Where tab `i` is drawn: its slot, or under the cursor while dragged.
+fn drawn_tab_rect(i: usize) -> RECT {
+    let r = tab_rect(i);
+    match &app().drag {
+        Some(d) if d.moving && d.idx == i => {
+            let last = tab_rect(app().tabs.len() - 1).left;
+            let left = (d.x - d.grab).clamp(tabs_left(), last);
+            RECT { left, right: left + (r.right - r.left), ..r }
+        }
+        _ => r,
+    }
+}
+
+/// Follow the cursor while dragging a tab, moving it to the slot under
+/// its center.
+fn drag_tab(x: i32) {
+    let a = app();
+    let n = a.tabs.len();
+    let Some(d) = a.drag.as_mut() else { return };
+    if d.idx >= n {
+        return; // the tab exited mid-drag; poll() already ended the drag
+    }
+    d.x = x;
+    if !d.moving && (x - d.start).abs() < scale(6) {
+        return;
+    }
+    d.moving = true;
+    let w = tab_w();
+    let center = x - d.grab + w / 2;
+    let target = ((center - tabs_left()) / w).clamp(0, n as i32 - 1) as usize;
+    if target != d.idx {
+        let tab = a.tabs.remove(d.idx);
+        a.tabs.insert(target, tab);
+        d.idx = target;
+        a.active = target;
+    }
+    refresh();
 }
 
 fn close_rect(r: &RECT) -> RECT {
@@ -1415,6 +1464,9 @@ fn poll() {
             || (!t.hwnd.is_null() && unsafe { IsWindow(t.hwnd) } == 0);
         if dead {
             dlog(&format!("tab {i} dead"));
+            if a.drag.take().is_some() {
+                unsafe { ReleaseCapture() };
+            }
             a.tabs.remove(i);
             if i < a.active {
                 a.active -= 1;
@@ -1548,8 +1600,12 @@ unsafe fn paint_bar(dc: HDC, rc: &RECT) {
     fill(dc, &RECT { left: 0, top: 0, right: rc.right, bottom: bh }, C_BAR);
     let radius = scale(16);
 
-    for (i, t) in a.tabs.iter().enumerate() {
-        let r = tab_rect(i);
+    // the dragged tab is drawn last, under the cursor
+    let dragged = a.drag.as_ref().filter(|d| d.moving && d.idx < a.tabs.len()).map(|d| d.idx);
+    let order = (0..a.tabs.len()).filter(|&i| Some(i) != dragged).chain(dragged);
+    for i in order {
+        let t = &a.tabs[i];
+        let r = drawn_tab_rect(i);
         let active = i == a.active;
         let hovered = a.hover == Hit::Tab(i) || a.hover == Hit::Close(i);
         if active {
@@ -2037,8 +2093,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_MOUSEMOVE => {
             let (x, y) = mouse_xy(lp);
+            if a.drag.is_some() {
+                drag_tab(x);
+                return 0;
+            }
             set_hover(hit(x, y));
             track_mouse(hwnd, false);
+            return 0;
+        }
+        WM_CAPTURECHANGED => {
+            if a.drag.take().is_some() {
+                refresh();
+            }
             return 0;
         }
         WM_MOUSELEAVE => {
@@ -2051,7 +2117,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let h = hit(x, y);
             a.pressed = h;
             match h {
-                Hit::Tab(i) => activate(i),
+                Hit::Tab(i) => {
+                    activate(i);
+                    let grab = x - tab_rect(i).left;
+                    a.drag = Some(Drag { idx: i, grab, start: x, x, moving: false });
+                    SetCapture(hwnd);
+                }
                 Hit::Close(i) => close_tab(i),
                 Hit::Plus => new_home_tab(),
                 Hit::Menu => show_menu(),
@@ -2061,6 +2132,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             return 0;
         }
         WM_LBUTTONUP => {
+            if a.drag.is_some() {
+                ReleaseCapture(); // WM_CAPTURECHANGED ends the drag
+                a.pressed = Hit::None;
+                return 0;
+            }
             let (x, y) = mouse_xy(lp);
             let h = hit(x, y);
             if h == a.pressed {
@@ -2217,6 +2293,7 @@ fn main() {
             closing: false,
             focused: true,
             home_items: Vec::new(),
+            drag: None,
         }));
         app().favorites = load_favorites();
         app().recent = load_recent();

@@ -10,6 +10,7 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
 
 - 탭마다 실제 mintty + bash 프로세스 (Win32 `SetParent`로 임베드)
 - **크롬 스타일 탭 바**: 제목표시줄 자리에 탭이 들어가고, 최소화·최대화·닫기 버튼을 직접 그림
+  - 탭을 끌어서 순서 바꾸기
   - 빈 곳을 끌어 창 이동, 더블클릭으로 최대화, Win11 스냅 레이아웃(최대화 버튼에 마우스 올리기) 지원
 - **홈 화면**: 처음 켜거나 `+`를 누르면 열리는 새 탭 화면
   - 셸 카드(Git Bash / WSL 배포판)를 눌러 그 탭에서 바로 시작
@@ -41,6 +42,7 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
 | `▾` / `+` 우클릭 | 셸 선택 메뉴 (홈 / Git Bash / WSL 배포판) |
 | Ctrl+Shift+W / 휠클릭 / × | 탭 닫기 |
 | 명령 패널 클릭 / 우클릭 | 그 명령 실행 / 실행·입력만·편집 메뉴 |
+| 탭 끌기 | 탭 순서 바꾸기 |
 | 탭 우클릭 | 최근·즐겨찾는 폴더로 이동 / 다시 시작 / 강제 종료 / 탭 닫기 |
 | Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 탭 |
 | Alt+1~9 | N번째 탭 (9 = 마지막) |
@@ -82,7 +84,7 @@ cargo build --release   # target/release/bashtab.exe
 `v*` 태그를 push하면 GitHub Actions가 exe를 빌드해 Release에 올리고, Scoop manifest(`bucket/bashtab.json`)의 버전과 해시를 갱신합니다.
 
 ```bash
-git tag v0.5.5 && git push origin v0.5.5
+git tag v0.5.6 && git push origin v0.5.6
 ```
 
 `BASHTAB_LOG=1` 환경 변수를 주고 실행하면 `%LOCALAPPDATA%\bashtab\debug.log`에 디버그 로그를 남깁니다.
