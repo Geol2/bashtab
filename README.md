@@ -84,7 +84,7 @@ cargo build --release   # target/release/bashtab.exe
 `v*` 태그를 push하면 GitHub Actions가 exe를 빌드해 Release에 올리고, Scoop manifest(`bucket/bashtab.json`)의 버전과 해시를 갱신합니다.
 
 ```bash
-git tag v0.5.6 && git push origin v0.5.6
+git tag v0.5.7 && git push origin v0.5.7
 ```
 
 `BASHTAB_LOG=1` 환경 변수를 주고 실행하면 `%LOCALAPPDATA%\bashtab\debug.log`에 디버그 로그를 남깁니다.

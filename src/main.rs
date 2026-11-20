@@ -1086,6 +1086,12 @@ fn layout() {
     let a = app();
     let rc = client_rect();
     let top = bar_h();
+    // Minimized, the client area is 0x0. Shrinking mintty to that makes the
+    // terminal one column wide: output wraps one character per line and the
+    // screen comes back blank. Keep the last size instead.
+    if unsafe { IsIconic(a.main) } != 0 || rc.right < scale(100) || rc.bottom - top < scale(40) {
+        return;
+    }
     let width = if cmds_visible() { cmds_panel().left } else { rc.right };
     let windows: Vec<(HWND, bool)> =
         a.tabs.iter().enumerate().filter(|(_, t)| !t.hwnd.is_null()).map(|(i, t)| (t.hwnd, i == a.active)).collect();
@@ -1108,6 +1114,15 @@ fn layout() {
                 );
             }
         }
+    }
+}
+
+/// Make the active mintty repaint itself, in case it missed a paint while
+/// the window was covered or minimized.
+fn redraw_active() {
+    let a = app();
+    if let Some(t) = a.tabs.get(a.active).filter(|t| !t.hwnd.is_null()) {
+        unsafe { RedrawWindow(t.hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN) };
     }
 }
 
@@ -2057,6 +2072,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_ERASEBKGND => return 1,
         WM_SIZE => {
             layout();
+            redraw_active();
             InvalidateRect(hwnd, null(), 0);
             return 0;
         }
@@ -2070,6 +2086,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if a.focused {
                 set_hotkeys(true);
                 focus_active();
+                redraw_active();
                 return 0;
             }
             set_hotkeys(false);
