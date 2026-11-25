@@ -50,6 +50,11 @@ const MENU_EDIT_CMDS: usize = 11;
 const MENU_SPLIT1: usize = 12;
 const MENU_SPLIT2: usize = 13;
 const MENU_SPLIT4: usize = 14;
+const MENU_PANE_ADD: usize = 15;
+const MENU_PANE_CLOSE: usize = 16;
+const MENU_PANE_EVEN: usize = 17;
+const HK_PANE_ADD: i32 = 6;
+const MAX_PANES: usize = 6;
 const MENU_FONT: usize = 1000; // MENU_FONT + font index
 const MENU_WSL: usize = 100; // MENU_WSL + distro index
 const MENU_GO: usize = 2000; // MENU_GO + index into jump_folders()
@@ -133,15 +138,17 @@ impl Drop for Pane {
     }
 }
 
-/// A home tab has no panes; a terminal tab shows 1 to 4 panes side by side.
+/// A home tab has no panes; a terminal tab shows 1 to MAX_PANES panes.
 struct Tab {
     panes: Vec<Pane>,
     focus: usize, // pane that has (or last had) the keyboard
+    xs: Vec<f32>, // column borders as fractions of the width (empty = even)
+    ys: Vec<f32>, // per column, where its two panes meet (empty = halves)
 }
 
 impl Tab {
     fn home() -> Tab {
-        Tab { panes: Vec::new(), focus: 0 }
+        Tab { panes: Vec::new(), focus: 0, xs: Vec::new(), ys: Vec::new() }
     }
     fn is_home(&self) -> bool {
         self.panes.is_empty()
@@ -207,8 +214,17 @@ enum Hit {
     Home(usize), // index into App::home_items
     Cmds,        // command panel toggle in the tab bar
     Split,       // pane layout picker in the tab bar
+    Sash(Sash),  // border between panes, dragged to resize them
     Cmd(usize),  // index into App::cmds
     CmdEdit,
+}
+
+/// A draggable border: between columns `k` and `k+1`, or between the two
+/// panes stacked in column `c`.
+#[derive(Clone, Copy, PartialEq)]
+enum Sash {
+    Col(usize),
+    Row(usize),
 }
 
 #[derive(Clone)]
@@ -259,6 +275,7 @@ struct App {
     focused: bool,
     home_items: Vec<(RECT, HomeItem)>, // rebuilt on every paint of the home tab
     drag: Option<Drag>,
+    resize: Option<Sash>, // pane border being dragged
 }
 
 /// A tab being dragged to a new position.
@@ -967,6 +984,9 @@ fn hit(x: i32, y: i32) -> Hit {
             }
             return Hit::None;
         }
+        if let Some(s) = sash_at(x, y) {
+            return Hit::Sash(s);
+        }
         if a.tabs.get(a.active).is_some_and(Tab::is_home) {
             if let Some(i) = a.home_items.iter().position(|(r, _)| inside(r, x, y)) {
                 return Hit::Home(i);
@@ -1007,7 +1027,7 @@ fn hit(x: i32, y: i32) -> Hit {
 fn start_term(slot: Option<usize>, profile: Profile, cwd: Option<&str>) {
     let Some(pane) = spawn_pane(profile, cwd) else { return };
     let a = app();
-    let tab = Tab { panes: vec![pane], focus: 0 };
+    let tab = Tab { panes: vec![pane], focus: 0, xs: Vec::new(), ys: Vec::new() };
     match slot.filter(|&i| a.tabs.get(i).is_some_and(Tab::is_home)) {
         Some(i) => {
             a.tabs[i] = tab;
@@ -1094,9 +1114,10 @@ fn pane_cwd(p: &Pane) -> Option<String> {
     Path::new(&dir).is_dir().then_some(dir)
 }
 
-/// Show tab `i` as `n` panes (1, 2 or 4): new panes start the focused
+/// Show tab `i` as `n` panes (1..=MAX_PANES): new panes start the focused
 /// pane's shell in its folder; extra panes are asked to close.
 fn split_tab(i: usize, n: usize) {
+    let n = n.clamp(1, MAX_PANES);
     let a = app();
     let Some(t) = a.tabs.get_mut(i) else { return };
     let Some(src) = t.pane() else { return };
@@ -1126,26 +1147,118 @@ fn split_tab(i: usize, n: usize) {
     refresh();
 }
 
-/// Where each of `n` panes goes in `area`: 1 full, 2 side by side,
-/// 3 = one left + two stacked right, 4 = 2x2. Panes are `gap` apart.
-fn pane_rects(n: usize, area: &RECT, gap: i32) -> Vec<RECT> {
-    let (l, t, r, b) = (area.left, area.top, area.right, area.bottom);
-    let mx = (l + r) / 2;
-    let my = (t + b) / 2;
-    let g = gap / 2;
-    let rc = |l, t, r, b| RECT { left: l, top: t, right: r, bottom: b };
+/// Panes per column for `n` panes: 1 and 2 side by side, then columns of
+/// two with any single pane on the left (3 = one left + two stacked right,
+/// 4 = 2x2, 5 = one + 2x2, 6 = 3x2).
+fn grid(n: usize) -> Vec<usize> {
     match n {
-        0 => Vec::new(),
-        1 => vec![*area],
-        2 => vec![rc(l, t, mx - g, b), rc(mx + g, t, r, b)],
-        3 => vec![rc(l, t, mx - g, b), rc(mx + g, t, r, my - g), rc(mx + g, my + g, r, b)],
-        _ => vec![
-            rc(l, t, mx - g, my - g),
-            rc(mx + g, t, r, my - g),
-            rc(l, my + g, mx - g, b),
-            rc(mx + g, my + g, r, b),
-        ],
+        0..=2 => vec![1; n],
+        _ => {
+            let cols = n.div_ceil(2);
+            (0..cols).map(|c| if c < cols * 2 - n { 1 } else { 2 }).collect()
+        }
     }
+}
+
+/// The tab's column borders, or even ones if they don't fit `cols`.
+fn tab_xs(t: &Tab, cols: usize) -> Vec<f32> {
+    if t.xs.len() + 1 == cols {
+        t.xs.clone()
+    } else {
+        (1..cols).map(|i| i as f32 / cols as f32).collect()
+    }
+}
+
+fn tab_ys(t: &Tab, cols: usize) -> Vec<f32> {
+    if t.ys.len() == cols { t.ys.clone() } else { vec![0.5; cols] }
+}
+
+/// Panes per column, column border x's (area edges included) and, per
+/// column, the y where its stacked panes meet.
+fn grid_lines(t: &Tab, area: &RECT) -> (Vec<usize>, Vec<i32>, Vec<i32>) {
+    let counts = grid(t.panes.len());
+    let cols = counts.len().max(1);
+    let w = (area.right - area.left) as f32;
+    let h = (area.bottom - area.top) as f32;
+    let mut xb = vec![area.left];
+    xb.extend(tab_xs(t, cols).iter().map(|f| area.left + (f * w).round() as i32));
+    xb.push(area.right);
+    let yb = tab_ys(t, cols).iter().map(|f| area.top + (f * h).round() as i32).collect();
+    (counts, xb, yb)
+}
+
+/// Where each pane of `t` goes in `area`, column by column, `gap` apart.
+fn pane_rects(t: &Tab, area: &RECT, gap: i32) -> Vec<RECT> {
+    let g = gap / 2;
+    let (counts, xb, yb) = grid_lines(t, area);
+    let last = counts.len().saturating_sub(1);
+    let mut out = Vec::new();
+    for (c, &k) in counts.iter().enumerate() {
+        let l = if c == 0 { xb[c] } else { xb[c] + g };
+        let r = if c == last { xb[c + 1] } else { xb[c + 1] - g };
+        let rc = |t, b| RECT { left: l, top: t, right: r, bottom: b };
+        if k == 1 {
+            out.push(rc(area.top, area.bottom));
+        } else {
+            out.push(rc(area.top, yb[c] - g));
+            out.push(rc(yb[c] + g, area.bottom));
+        }
+    }
+    out
+}
+
+/// The pane border under (x, y) in the active tab, if any.
+fn sash_at(x: i32, y: i32) -> Option<Sash> {
+    let a = app();
+    let t = a.tabs.get(a.active).filter(|t| t.panes.len() > 1)?;
+    let area = term_area();
+    if !inside(&area, x, y) {
+        return None;
+    }
+    let (counts, xb, yb) = grid_lines(t, &area);
+    let g = pane_gap() / 2 + scale(1);
+    for (c, &k) in counts.iter().enumerate() {
+        if k == 2 && x >= xb[c] && x < xb[c + 1] && (y - yb[c]).abs() <= g {
+            return Some(Sash::Row(c));
+        }
+    }
+    (1..counts.len()).find(|&c| (x - xb[c]).abs() <= g).map(|c| Sash::Col(c - 1))
+}
+
+/// Move border `s` of the active tab to the cursor, keeping panes usable.
+fn resize_to(s: Sash, x: i32, y: i32) {
+    let a = app();
+    let area = term_area();
+    let Some(t) = a.tabs.get_mut(a.active) else { return };
+    let cols = grid(t.panes.len()).len();
+    if cols == 0 {
+        return;
+    }
+    t.xs = tab_xs(t, cols);
+    t.ys = tab_ys(t, cols);
+    let w = (area.right - area.left).max(1) as f32;
+    let h = (area.bottom - area.top).max(1) as f32;
+    let (min_w, min_h) = (scale(120) as f32 / w, scale(60) as f32 / h);
+    match s {
+        Sash::Col(k) if k < t.xs.len() => {
+            let lo = if k == 0 { 0.0 } else { t.xs[k - 1] } + min_w;
+            let hi = t.xs.get(k + 1).copied().unwrap_or(1.0) - min_w;
+            if lo < hi {
+                t.xs[k] = ((x - area.left) as f32 / w).clamp(lo, hi);
+            }
+        }
+        Sash::Row(c) if c < t.ys.len() && min_h < 0.5 => {
+            t.ys[c] = ((y - area.top) as f32 / h).clamp(min_h, 1.0 - min_h);
+        }
+        _ => return,
+    }
+    layout();
+    refresh();
+}
+
+fn sash_cursor(s: Sash) {
+    let c = if matches!(s, Sash::Col(_)) { IDC_SIZEWE } else { IDC_SIZENS };
+    unsafe { SetCursor(LoadCursorW(null_mut(), c)) };
 }
 
 /// Area under the tab bar that terminal panes share.
@@ -1156,7 +1269,7 @@ fn term_area() -> RECT {
 }
 
 fn pane_gap() -> i32 {
-    scale(4)
+    scale(6)
 }
 
 fn spawn_tab(profile: Profile) {
@@ -1233,7 +1346,7 @@ fn layout() {
             }
         }
         if let Some(t) = a.tabs.get(a.active) {
-            for (p, r) in t.panes.iter().zip(pane_rects(t.panes.len(), &area, pane_gap())) {
+            for (p, r) in t.panes.iter().zip(pane_rects(t, &area, pane_gap())) {
                 if !p.hwnd.is_null() {
                     let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED;
                     SetWindowPos(p.hwnd, null_mut(), r.left, r.top, r.right - r.left, (r.bottom - r.top).max(0), flags);
@@ -1560,7 +1673,7 @@ fn tab_menu(i: usize) {
         items.push((0, String::new()));
     }
     if !t.is_home() {
-        split_menu_items(&mut items, t.panes.len());
+        split_menu_items(&mut items, t);
         items.push((0, String::new()));
         let which = if t.panes.len() > 1 { " (선택한 창)" } else { "" };
         items.push((MENU_RESTART, format!("다시 시작{which}")));
@@ -1584,9 +1697,7 @@ fn tab_menu(i: usize) {
             }
         }
         MENU_CLOSE => close_tab(i),
-        MENU_SPLIT1 => split_tab(i, 1),
-        MENU_SPLIT2 => split_tab(i, 2),
-        MENU_SPLIT4 => split_tab(i, 4),
+        c if split_cmd(i, c) => {}
         c if c >= MENU_GO => {
             if let Some(f) = folders.get(c - MENU_GO) {
                 cd_in_tab(i, f);
@@ -1597,7 +1708,15 @@ fn tab_menu(i: usize) {
     }
 }
 
-fn split_menu_items(items: &mut Vec<(usize, String)>, n: usize) {
+fn split_menu_items(items: &mut Vec<(usize, String)>, t: &Tab) {
+    let n = t.panes.len();
+    if n < MAX_PANES {
+        items.push((MENU_PANE_ADD, format!("창 하나 추가 ({}개로)\tCtrl+Shift+D", n + 1)));
+    }
+    if n > 1 {
+        items.push((MENU_PANE_CLOSE, format!("선택한 창 닫기 ({}개로)", n - 1)));
+    }
+    items.push((0, String::new()));
     for (id, count, label) in [
         (MENU_SPLIT1, 1, "화면 하나로"),
         (MENU_SPLIT2, 2, "화면 2개로 나누기 (좌우)"),
@@ -1607,6 +1726,36 @@ fn split_menu_items(items: &mut Vec<(usize, String)>, n: usize) {
             items.push((id, label.to_string()));
         }
     }
+    if n > 1 && (!t.xs.is_empty() || !t.ys.is_empty()) {
+        items.push((MENU_PANE_EVEN, "창 크기 똑같이".into()));
+    }
+}
+
+/// Run a pane-layout menu command on tab `i`; false if `cmd` isn't one.
+fn split_cmd(i: usize, cmd: usize) -> bool {
+    let a = app();
+    let Some(t) = a.tabs.get_mut(i) else { return false };
+    let n = t.panes.len();
+    match cmd {
+        MENU_SPLIT1 => split_tab(i, 1),
+        MENU_SPLIT2 => split_tab(i, 2),
+        MENU_SPLIT4 => split_tab(i, 4),
+        MENU_PANE_ADD => split_tab(i, n + 1),
+        MENU_PANE_CLOSE => {
+            if n > 1 {
+                let j = t.focus.min(n - 1);
+                t.panes[j].close(); // poll() drops it once it exits
+            }
+        }
+        MENU_PANE_EVEN => {
+            t.xs.clear();
+            t.ys.clear();
+            layout();
+            refresh();
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// Layout picker under the split button in the tab bar.
@@ -1614,18 +1763,15 @@ fn split_menu() {
     let a = app();
     let Some(t) = a.tabs.get(a.active).filter(|t| !t.is_home()) else { return };
     let mut items = Vec::new();
-    split_menu_items(&mut items, t.panes.len());
+    split_menu_items(&mut items, t);
     let r = split_btn_rect();
     let mut pt = POINT { x: r.left, y: r.bottom };
     let cmd = unsafe {
         ClientToScreen(a.main, &mut pt);
         popup(&items, pt)
     };
-    match cmd {
-        MENU_SPLIT1 => split_tab(a.active, 1),
-        MENU_SPLIT2 => split_tab(a.active, 2),
-        MENU_SPLIT4 => split_tab(a.active, 4),
-        _ => focus_active(),
+    if !split_cmd(a.active, cmd) {
+        focus_active();
     }
 }
 
@@ -2119,7 +2265,7 @@ unsafe fn paint(hwnd: HWND) {
         Some(t) if t.is_home() => paint_home(mem, &body),
         Some(t) => {
             fill(mem, &body, C_TERM_BG);
-            let rects = pane_rects(t.panes.len(), &term_area(), pane_gap());
+            let rects = pane_rects(t, &term_area(), pane_gap());
             if t.panes.len() > 1 {
                 // gaps between panes, the focused one outlined
                 fill(mem, &term_area(), C_BAR);
@@ -2158,6 +2304,7 @@ fn set_hotkeys(on: bool) {
         if on {
             RegisterHotKey(h, HK_NEW, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'T' as u32);
             RegisterHotKey(h, HK_NEW_WSL, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'L' as u32);
+            RegisterHotKey(h, HK_PANE_ADD, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'D' as u32);
             RegisterHotKey(h, HK_CLOSE, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'W' as u32);
             RegisterHotKey(h, HK_NEXT, MOD_CONTROL, VK_TAB as u32);
             RegisterHotKey(h, HK_PREV, MOD_CONTROL | MOD_SHIFT, VK_TAB as u32);
@@ -2165,7 +2312,7 @@ fn set_hotkeys(on: bool) {
                 RegisterHotKey(h, HK_TAB + d, MOD_ALT | MOD_NOREPEAT, '0' as u32 + d as u32);
             }
         } else {
-            for id in [HK_NEW, HK_NEW_WSL, HK_CLOSE, HK_NEXT, HK_PREV] {
+            for id in [HK_NEW, HK_NEW_WSL, HK_PANE_ADD, HK_CLOSE, HK_NEXT, HK_PREV] {
                 UnregisterHotKey(h, id);
             }
             for d in 1..=9 {
@@ -2181,6 +2328,12 @@ fn on_hotkey(id: i32) {
     match id {
         HK_NEW => spawn_tab(Profile::GitBash),
         HK_NEW_WSL => spawn_default_wsl(),
+        HK_PANE_ADD => {
+            let n = a.tabs.get(a.active).filter(|t| !t.is_home()).map_or(0, |t| t.panes.len());
+            if n > 0 && n < MAX_PANES {
+                split_tab(a.active, n + 1);
+            }
+        }
         HK_CLOSE => close_tab(a.active),
         HK_NEXT => cycle(1),
         HK_PREV => cycle(-1),
@@ -2332,7 +2485,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let mut pt: POINT = zeroed();
             GetCursorPos(&mut pt);
             ScreenToClient(hwnd, &mut pt);
-            if matches!(hit(pt.x, pt.y), Hit::Home(_) | Hit::Cmd(_) | Hit::CmdEdit) {
+            let h = hit(pt.x, pt.y);
+            if let Hit::Sash(s) = h {
+                sash_cursor(s);
+                return 1;
+            }
+            if matches!(h, Hit::Home(_) | Hit::Cmd(_) | Hit::CmdEdit) {
                 SetCursor(LoadCursorW(null_mut(), IDC_HAND));
                 return 1;
             }
@@ -2343,11 +2501,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 drag_tab(x);
                 return 0;
             }
+            if let Some(s) = a.resize {
+                sash_cursor(s);
+                resize_to(s, x, y);
+                return 0;
+            }
             set_hover(hit(x, y));
             track_mouse(hwnd, false);
             return 0;
         }
         WM_CAPTURECHANGED => {
+            if a.resize.take().is_some() {
+                focus_active();
+            }
             if a.drag.take().is_some() {
                 refresh();
             }
@@ -2374,12 +2540,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 Hit::Menu => show_menu(),
                 Hit::Cmds => toggle_commands(),
                 Hit::Split => split_menu(),
+                Hit::Sash(s) => {
+                    a.resize = Some(s);
+                    sash_cursor(s);
+                    SetCapture(hwnd);
+                }
                 _ => {}
             }
             return 0;
         }
         WM_LBUTTONUP => {
-            if a.drag.is_some() {
+            if a.drag.is_some() || a.resize.is_some() {
                 ReleaseCapture(); // WM_CAPTURECHANGED ends the drag
                 a.pressed = Hit::None;
                 return 0;
@@ -2537,6 +2708,7 @@ fn main() {
             focused: true,
             home_items: Vec::new(),
             drag: None,
+            resize: None,
         }));
         app().favorites = load_favorites();
         app().recent = load_recent();
