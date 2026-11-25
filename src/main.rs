@@ -47,6 +47,9 @@ const MENU_ADD_FAV: usize = 8;
 const MENU_RUN: usize = 9;
 const MENU_TYPE: usize = 10;
 const MENU_EDIT_CMDS: usize = 11;
+const MENU_SPLIT1: usize = 12;
+const MENU_SPLIT2: usize = 13;
+const MENU_SPLIT4: usize = 14;
 const MENU_FONT: usize = 1000; // MENU_FONT + font index
 const MENU_WSL: usize = 100; // MENU_WSL + distro index
 const MENU_GO: usize = 2000; // MENU_GO + index into jump_folders()
@@ -90,47 +93,79 @@ impl Profile {
     }
 }
 
-/// A home tab has no profile/child; a terminal tab has both.
-struct Tab {
-    profile: Option<Profile>,
-    child: Option<Child>,
-    hwnd: HWND, // mintty window, null until it shows up (always null for home)
-    // Job object holding mintty and everything started in the tab, so a
+/// One terminal: a mintty process and its window.
+struct Pane {
+    profile: Profile,
+    child: Child,
+    hwnd: HWND, // mintty window, null until it shows up
+    // Job object holding mintty and everything started in it, so a
     // force-kill also takes down native programs (java, node, …) that
-    // msys signals don't reach. Null for home tabs.
+    // msys signals don't reach. Null if the job could not be set up.
     job: HANDLE,
     title: String,
     started: Instant,
 }
 
-impl Tab {
-    fn home() -> Tab {
-        Tab {
-            profile: None,
-            child: None,
-            hwnd: null_mut(),
-            job: null_mut(),
-            title: "새 탭".into(),
-            started: Instant::now(),
-        }
-    }
-    fn is_home(&self) -> bool {
-        self.profile.is_none()
-    }
-    /// Kill mintty and every process started from this tab.
+impl Pane {
+    /// Kill mintty and every process started from this pane.
     fn kill_tree(&mut self) {
         if !self.job.is_null() {
             unsafe { TerminateJobObject(self.job, 1) };
-        } else if let Some(c) = self.child.as_mut() {
-            let _ = c.kill();
+        } else {
+            let _ = self.child.kill();
+        }
+    }
+    /// Ask mintty to close (it hangs up bash, or asks first if something runs).
+    fn close(&mut self) {
+        if self.hwnd.is_null() {
+            self.kill_tree();
+        } else {
+            unsafe { PostMessageW(self.hwnd, WM_CLOSE, 0, 0) };
         }
     }
 }
 
-impl Drop for Tab {
+impl Drop for Pane {
     fn drop(&mut self) {
         if !self.job.is_null() {
             unsafe { CloseHandle(self.job) };
+        }
+    }
+}
+
+/// A home tab has no panes; a terminal tab shows 1 to 4 panes side by side.
+struct Tab {
+    panes: Vec<Pane>,
+    focus: usize, // pane that has (or last had) the keyboard
+}
+
+impl Tab {
+    fn home() -> Tab {
+        Tab { panes: Vec::new(), focus: 0 }
+    }
+    fn is_home(&self) -> bool {
+        self.panes.is_empty()
+    }
+    fn pane(&self) -> Option<&Pane> {
+        self.panes.get(self.focus).or(self.panes.first())
+    }
+    fn profile(&self) -> Option<&Profile> {
+        self.pane().map(|p| &p.profile)
+    }
+    /// Window of the focused pane; null for home or while starting.
+    fn hwnd(&self) -> HWND {
+        self.pane().map_or(null_mut(), |p| p.hwnd)
+    }
+    fn title(&self) -> &str {
+        match self.pane() {
+            None => "새 탭",
+            Some(p) if p.title.is_empty() => p.profile.label(),
+            Some(p) => &p.title,
+        }
+    }
+    fn kill_tree(&mut self) {
+        for p in &mut self.panes {
+            p.kill_tree();
         }
     }
 }
@@ -171,6 +206,7 @@ enum Hit {
     CloseWin,
     Home(usize), // index into App::home_items
     Cmds,        // command panel toggle in the tab bar
+    Split,       // pane layout picker in the tab bar
     Cmd(usize),  // index into App::cmds
     CmdEdit,
 }
@@ -800,7 +836,7 @@ fn tabs_left() -> i32 {
 
 fn tab_w() -> i32 {
     let n = app().tabs.len().max(1) as i32;
-    let avail = client_rect().right - tabs_left() - plus_w() - menu_w() - 3 * caption_w() - cmds_btn_w() - scale(56);
+    let avail = client_rect().right - tabs_left() - plus_w() - menu_w() - 3 * caption_w() - 2 * cmds_btn_w() - scale(60);
     (avail / n).clamp(scale(72), scale(220))
 }
 
@@ -879,6 +915,12 @@ fn cmds_btn_rect() -> RECT {
     RECT { left: right - cmds_btn_w(), right, ..p }
 }
 
+/// Pane layout button, left of the command panel toggle.
+fn split_btn_rect() -> RECT {
+    let c = cmds_btn_rect();
+    RECT { left: c.left - scale(4) - cmds_btn_w(), right: c.left - scale(4), ..c }
+}
+
 fn cmds_visible() -> bool {
     let a = app();
     a.cmds_open && a.tabs.get(a.active).is_some_and(|t| !t.is_home())
@@ -952,6 +994,9 @@ fn hit(x: i32, y: i32) -> Hit {
     if inside(&cmds_btn_rect(), x, y) {
         return Hit::Cmds;
     }
+    if inside(&split_btn_rect(), x, y) {
+        return Hit::Split;
+    }
     Hit::None
 }
 
@@ -960,6 +1005,25 @@ fn hit(x: i32, y: i32) -> Hit {
 /// Start a terminal. `slot` is a home tab to turn into the terminal;
 /// with `None` a new tab is appended.
 fn start_term(slot: Option<usize>, profile: Profile, cwd: Option<&str>) {
+    let Some(pane) = spawn_pane(profile, cwd) else { return };
+    let a = app();
+    let tab = Tab { panes: vec![pane], focus: 0 };
+    match slot.filter(|&i| a.tabs.get(i).is_some_and(Tab::is_home)) {
+        Some(i) => {
+            a.tabs[i] = tab;
+            a.active = i;
+        }
+        None => {
+            a.tabs.push(tab);
+            a.active = a.tabs.len() - 1;
+        }
+    }
+    layout();
+    refresh();
+}
+
+/// Launch mintty for `profile`; its window is adopted later by poll().
+fn spawn_pane(profile: Profile, cwd: Option<&str>) -> Option<Pane> {
     if let Profile::Wsl(distro) = &profile {
         ensure_wsl_access(distro);
     }
@@ -1003,29 +1067,96 @@ fn start_term(slot: Option<usize>, profile: Profile, cwd: Option<&str>) {
             };
             resume_process(child.id());
             dlog(&format!("spawned pid {} ({}) cwd={cwd:?} job={}", child.id(), profile.label(), !job.is_null()));
-            let tab = Tab {
-                title: profile.label().to_string(),
-                profile: Some(profile),
-                child: Some(child),
-                hwnd: null_mut(),
-                job,
-                started: Instant::now(),
-            };
-            match slot.filter(|&i| a.tabs.get(i).is_some_and(Tab::is_home)) {
-                Some(i) => {
-                    a.tabs[i] = tab;
-                    a.active = i;
-                }
-                None => {
-                    a.tabs.push(tab);
-                    a.active = a.tabs.len() - 1;
-                }
-            }
-            layout();
-            refresh();
+            Some(Pane { title: profile.label().to_string(), profile, child, hwnd: null_mut(), job, started: Instant::now() })
         }
-        Err(e) => message_box(&format!("mintty 실행 실패: {e}")),
+        Err(e) => {
+            message_box(&format!("mintty 실행 실패: {e}"));
+            None
+        }
     }
+}
+
+/// Folder a pane's shell is in, from its title (Git Bash shows `\w`).
+fn pane_cwd(p: &Pane) -> Option<String> {
+    if p.profile != Profile::GitBash {
+        return None;
+    }
+    let t = p.title.trim();
+    let dir = if t == "~" {
+        app().home.clone()
+    } else if let Some(rest) = t.strip_prefix("~/") {
+        format!("{}\\{}", app().home, rest.replace('/', "\\"))
+    } else if t.starts_with('/') {
+        msys_to_windows(t)
+    } else {
+        return None;
+    };
+    Path::new(&dir).is_dir().then_some(dir)
+}
+
+/// Show tab `i` as `n` panes (1, 2 or 4): new panes start the focused
+/// pane's shell in its folder; extra panes are asked to close.
+fn split_tab(i: usize, n: usize) {
+    let a = app();
+    let Some(t) = a.tabs.get_mut(i) else { return };
+    let Some(src) = t.pane() else { return };
+    let (profile, cwd) = (src.profile.clone(), pane_cwd(src));
+    if t.panes.len() > n {
+        // keep the focused pane, close the rest from the end
+        let keep = t.focus.min(t.panes.len() - 1);
+        let mut extra = t.panes.len() - n;
+        for j in (0..t.panes.len()).rev() {
+            if extra == 0 {
+                break;
+            }
+            if j != keep {
+                t.panes[j].close();
+                extra -= 1;
+            }
+        }
+        return; // poll() drops them as they exit
+    }
+    while t.panes.len() < n {
+        let Some(p) = spawn_pane(profile.clone(), cwd.as_deref()) else { break };
+        t.panes.push(p);
+        t.focus = t.panes.len() - 1;
+    }
+    a.active = i;
+    layout();
+    refresh();
+}
+
+/// Where each of `n` panes goes in `area`: 1 full, 2 side by side,
+/// 3 = one left + two stacked right, 4 = 2x2. Panes are `gap` apart.
+fn pane_rects(n: usize, area: &RECT, gap: i32) -> Vec<RECT> {
+    let (l, t, r, b) = (area.left, area.top, area.right, area.bottom);
+    let mx = (l + r) / 2;
+    let my = (t + b) / 2;
+    let g = gap / 2;
+    let rc = |l, t, r, b| RECT { left: l, top: t, right: r, bottom: b };
+    match n {
+        0 => Vec::new(),
+        1 => vec![*area],
+        2 => vec![rc(l, t, mx - g, b), rc(mx + g, t, r, b)],
+        3 => vec![rc(l, t, mx - g, b), rc(mx + g, t, r, my - g), rc(mx + g, my + g, r, b)],
+        _ => vec![
+            rc(l, t, mx - g, my - g),
+            rc(mx + g, t, r, my - g),
+            rc(l, my + g, mx - g, b),
+            rc(mx + g, my + g, r, b),
+        ],
+    }
+}
+
+/// Area under the tab bar that terminal panes share.
+fn term_area() -> RECT {
+    let rc = client_rect();
+    let right = if cmds_visible() { cmds_panel().left } else { rc.right };
+    RECT { left: 0, top: bar_h(), right, bottom: rc.bottom }
+}
+
+fn pane_gap() -> i32 {
+    scale(4)
 }
 
 fn spawn_tab(profile: Profile) {
@@ -1092,37 +1223,33 @@ fn layout() {
     if unsafe { IsIconic(a.main) } != 0 || rc.right < scale(100) || rc.bottom - top < scale(40) {
         return;
     }
-    let width = if cmds_visible() { cmds_panel().left } else { rc.right };
-    let windows: Vec<(HWND, bool)> =
-        a.tabs.iter().enumerate().filter(|(_, t)| !t.hwnd.is_null()).map(|(i, t)| (t.hwnd, i == a.active)).collect();
+    let area = term_area();
     unsafe {
-        for &(h, active) in &windows {
-            if !active {
-                ShowWindow(h, SW_HIDE);
+        for (i, t) in a.tabs.iter().enumerate() {
+            if i != a.active {
+                for p in t.panes.iter().filter(|p| !p.hwnd.is_null()) {
+                    ShowWindow(p.hwnd, SW_HIDE);
+                }
             }
         }
-        for &(h, active) in &windows {
-            if active {
-                SetWindowPos(
-                    h,
-                    null_mut(),
-                    0,
-                    top,
-                    width,
-                    (rc.bottom - top).max(0),
-                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
-                );
+        if let Some(t) = a.tabs.get(a.active) {
+            for (p, r) in t.panes.iter().zip(pane_rects(t.panes.len(), &area, pane_gap())) {
+                if !p.hwnd.is_null() {
+                    let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED;
+                    SetWindowPos(p.hwnd, null_mut(), r.left, r.top, r.right - r.left, (r.bottom - r.top).max(0), flags);
+                }
             }
         }
     }
 }
 
-/// Make the active mintty repaint itself, in case it missed a paint while
-/// the window was covered or minimized.
+/// Make the active tab's mintty windows repaint, in case they missed a
+/// paint while the window was covered or minimized.
 fn redraw_active() {
     let a = app();
-    if let Some(t) = a.tabs.get(a.active).filter(|t| !t.hwnd.is_null()) {
-        unsafe { RedrawWindow(t.hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN) };
+    let Some(t) = a.tabs.get(a.active) else { return };
+    for p in t.panes.iter().filter(|p| !p.hwnd.is_null()) {
+        unsafe { RedrawWindow(p.hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN) };
     }
 }
 
@@ -1130,11 +1257,36 @@ fn focus_active() {
     let a = app();
     let Some(t) = a.tabs.get(a.active) else { return };
     unsafe {
-        if !t.hwnd.is_null() {
-            SetFocus(t.hwnd);
+        if !t.hwnd().is_null() {
+            SetFocus(t.hwnd());
         } else if GetFocus() != a.main {
             SetFocus(a.main);
         }
+    }
+}
+
+/// Which pane has the keyboard: mintty takes focus on its own when clicked,
+/// so ask the (shared) input queue. Returns true if it changed.
+fn track_pane_focus() -> bool {
+    let a = app();
+    let Some(t) = a.tabs.get_mut(a.active) else { return false };
+    if t.panes.len() < 2 {
+        return false;
+    }
+    let focused = unsafe {
+        let mut gti: GUITHREADINFO = zeroed();
+        gti.cbSize = size_of::<GUITHREADINFO>() as u32;
+        if GetGUIThreadInfo(0, &mut gti) == 0 {
+            return false;
+        }
+        gti.hwndFocus
+    };
+    match t.panes.iter().position(|p| !p.hwnd.is_null() && (p.hwnd == focused || unsafe { IsChild(p.hwnd, focused) } != 0)) {
+        Some(j) if j != t.focus => {
+            t.focus = j;
+            true
+        }
+        _ => false,
     }
 }
 
@@ -1228,12 +1380,12 @@ fn folder_menu(item: HomeItem) {
     let Some(path) = path else { return };
     let mut items = vec![(MENU_GIT, "Git Bash에서 열기".to_string())];
     wsl_menu_items(&mut items, "에서 열기", "");
-    let terms: Vec<_> = a.tabs.iter().enumerate().filter(|(_, t)| !t.hwnd.is_null()).collect();
+    let terms: Vec<_> = a.tabs.iter().enumerate().filter(|(_, t)| !t.hwnd().is_null()).collect();
     if !terms.is_empty() {
         items.push((0, String::new()));
     }
     for (i, t) in terms {
-        items.push((MENU_GO_TAB + i, format!("열린 탭에서 이동: {}", t.title)));
+        items.push((MENU_GO_TAB + i, format!("열린 탭에서 이동: {}", t.title())));
     }
     items.push((0, String::new()));
     if let HomeItem::Recent(_) = item {
@@ -1279,10 +1431,11 @@ fn folder_menu(item: HomeItem) {
     }
 }
 
-/// Make the shell in terminal tab `i` cd to `path` by typing the command.
+/// Make the shell in terminal tab `i` (its focused pane) cd to `path` by
+/// typing the command.
 fn cd_in_tab(i: usize, path: &str) {
     let Some(t) = app().tabs.get(i) else { return };
-    let dir = match &t.profile {
+    let dir = match t.profile() {
         Some(Profile::GitBash) => path.replace('\\', "/"),
         Some(Profile::Wsl(_)) => {
             let b = path.as_bytes();
@@ -1297,16 +1450,17 @@ fn cd_in_tab(i: usize, path: &str) {
     type_in_tab(i, &format!("cd '{}'", dir.replace('\'', r"'\''")), true);
 }
 
-/// Type `text` on the prompt line of terminal tab `i` (Ctrl+E Ctrl+U first
-/// clears whatever is there), pressing Enter if `run`.
+/// Type `text` on the prompt line of terminal tab `i`'s focused pane
+/// (Ctrl+E Ctrl+U first clears whatever is there), pressing Enter if `run`.
 fn type_in_tab(i: usize, text: &str, run: bool) {
     let Some(t) = app().tabs.get(i) else { return };
-    if t.hwnd.is_null() {
+    let hwnd = t.hwnd();
+    if hwnd.is_null() {
         return;
     }
     let line = format!("\x05\x15{text}{}", if run { "\r" } else { "" });
     for c in line.encode_utf16() {
-        unsafe { PostMessageW(t.hwnd, WM_CHAR, c as WPARAM, 0) };
+        unsafe { PostMessageW(hwnd, WM_CHAR, c as WPARAM, 0) };
     }
 }
 
@@ -1370,22 +1524,27 @@ fn close_tab(i: usize) {
     let Some(t) = a.tabs.get_mut(i) else { return };
     if t.is_home() {
         remove_tab(i);
-    } else if t.hwnd.is_null() {
-        t.kill_tree();
     } else {
-        // lets mintty hang up bash, or ask first if something is still running
-        unsafe { PostMessageW(t.hwnd, WM_CLOSE, 0, 0) };
+        for p in &mut t.panes {
+            p.close();
+        }
     }
 }
 
-/// Kill everything in the tab and start the same shell again in its place.
+/// Kill everything in the tab's focused pane and start the same shell
+/// again in its place.
 fn restart_tab(i: usize) {
     let a = app();
     let Some(t) = a.tabs.get_mut(i) else { return };
-    let Some(profile) = t.profile.clone() else { return };
-    t.kill_tree();
-    a.tabs[i] = Tab::home();
-    start_term(Some(i), profile, None);
+    let j = t.focus.min(t.panes.len().saturating_sub(1));
+    let Some(old) = t.panes.get_mut(j) else { return };
+    let profile = old.profile.clone();
+    old.kill_tree();
+    if let Some(p) = spawn_pane(profile, None) {
+        t.panes[j] = p;
+    }
+    layout();
+    refresh();
 }
 
 /// Right-click menu on a tab.
@@ -1393,7 +1552,7 @@ fn tab_menu(i: usize) {
     let a = app();
     let Some(t) = a.tabs.get(i) else { return };
     let mut items = Vec::new();
-    let folders = if t.hwnd.is_null() { Vec::new() } else { jump_folders() };
+    let folders = if t.hwnd().is_null() { Vec::new() } else { jump_folders() };
     for (k, f) in folders.iter().enumerate() {
         items.push((MENU_GO + k, format!("이동: {}\t{}", folder_name(f), short_path(f, 48))));
     }
@@ -1401,8 +1560,11 @@ fn tab_menu(i: usize) {
         items.push((0, String::new()));
     }
     if !t.is_home() {
-        items.push((MENU_RESTART, "다시 시작".to_string()));
-        items.push((MENU_KILL, "강제 종료 (실행 중인 프로그램 포함)".into()));
+        split_menu_items(&mut items, t.panes.len());
+        items.push((0, String::new()));
+        let which = if t.panes.len() > 1 { " (선택한 창)" } else { "" };
+        items.push((MENU_RESTART, format!("다시 시작{which}")));
+        items.push((MENU_KILL, format!("강제 종료{which} (실행 중인 프로그램 포함)")));
         items.push((0, String::new()));
     }
     items.push((MENU_CLOSE, "탭 닫기\tCtrl+Shift+W".into()));
@@ -1415,10 +1577,16 @@ fn tab_menu(i: usize) {
         MENU_RESTART => restart_tab(i),
         MENU_KILL => {
             if let Some(t) = a.tabs.get_mut(i) {
-                t.kill_tree();
+                let j = t.focus.min(t.panes.len().saturating_sub(1));
+                if let Some(p) = t.panes.get_mut(j) {
+                    p.kill_tree();
+                }
             }
         }
         MENU_CLOSE => close_tab(i),
+        MENU_SPLIT1 => split_tab(i, 1),
+        MENU_SPLIT2 => split_tab(i, 2),
+        MENU_SPLIT4 => split_tab(i, 4),
         c if c >= MENU_GO => {
             if let Some(f) = folders.get(c - MENU_GO) {
                 cd_in_tab(i, f);
@@ -1426,6 +1594,38 @@ fn tab_menu(i: usize) {
             }
         }
         _ => {}
+    }
+}
+
+fn split_menu_items(items: &mut Vec<(usize, String)>, n: usize) {
+    for (id, count, label) in [
+        (MENU_SPLIT1, 1, "화면 하나로"),
+        (MENU_SPLIT2, 2, "화면 2개로 나누기 (좌우)"),
+        (MENU_SPLIT4, 4, "화면 4개로 나누기 (2×2)"),
+    ] {
+        if count != n {
+            items.push((id, label.to_string()));
+        }
+    }
+}
+
+/// Layout picker under the split button in the tab bar.
+fn split_menu() {
+    let a = app();
+    let Some(t) = a.tabs.get(a.active).filter(|t| !t.is_home()) else { return };
+    let mut items = Vec::new();
+    split_menu_items(&mut items, t.panes.len());
+    let r = split_btn_rect();
+    let mut pt = POINT { x: r.left, y: r.bottom };
+    let cmd = unsafe {
+        ClientToScreen(a.main, &mut pt);
+        popup(&items, pt)
+    };
+    match cmd {
+        MENU_SPLIT1 => split_tab(a.active, 1),
+        MENU_SPLIT2 => split_tab(a.active, 2),
+        MENU_SPLIT4 => split_tab(a.active, 4),
+        _ => focus_active(),
     }
 }
 
@@ -1449,35 +1649,45 @@ fn poll() {
     let mut relayout = false;
     load_commands();
 
-    for t in a.tabs.iter_mut() {
-        let Some(child) = t.child.as_mut() else { continue };
-        if t.hwnd.is_null() {
-            let h = find_mintty_window(child.id());
+    for p in a.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()) {
+        if p.hwnd.is_null() {
+            let h = find_mintty_window(p.child.id());
             if !h.is_null() {
-                dlog(&format!("adopt pid {} hwnd {:?}", child.id(), h));
+                dlog(&format!("adopt pid {} hwnd {:?}", p.child.id(), h));
                 adopt(h);
-                t.hwnd = h;
-                t.title = window_title(h);
+                p.hwnd = h;
+                p.title = window_title(h);
                 relayout = true;
                 changed = true;
-            } else if t.started.elapsed().as_secs() > 60 {
-                let _ = child.kill();
+            } else if p.started.elapsed().as_secs() > 60 {
+                let _ = p.child.kill();
             }
         } else {
-            let title = window_title(t.hwnd);
-            if title != t.title {
-                t.title = title;
+            let title = window_title(p.hwnd);
+            if title != p.title {
+                p.title = title;
                 changed = true;
             }
         }
+    }
+    if track_pane_focus() {
+        changed = true;
     }
 
     let mut i = 0;
     while i < a.tabs.len() {
         let t = &mut a.tabs[i];
-        let dead = t.child.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(Some(_))))
-            || (!t.hwnd.is_null() && unsafe { IsWindow(t.hwnd) } == 0);
-        if dead {
+        let before = t.panes.len();
+        t.panes.retain_mut(|p| {
+            let dead = matches!(p.child.try_wait(), Ok(Some(_))) || (!p.hwnd.is_null() && unsafe { IsWindow(p.hwnd) } == 0);
+            !dead
+        });
+        if t.panes.len() != before {
+            t.focus = t.focus.min(t.panes.len().saturating_sub(1));
+            changed = true;
+            relayout = true;
+        }
+        if before > 0 && t.panes.is_empty() {
             dlog(&format!("tab {i} dead"));
             if a.drag.take().is_some() {
                 unsafe { ReleaseCapture() };
@@ -1514,7 +1724,7 @@ fn refresh() {
     unsafe {
         InvalidateRect(a.main, null(), 0);
         let title = match a.tabs.get(a.active) {
-            Some(t) if !t.is_home() => t.title.as_str(),
+            Some(t) if !t.is_home() => t.title(),
             _ => "bashtab",
         };
         SetWindowTextW(a.main, wide(title).as_ptr());
@@ -1636,14 +1846,14 @@ unsafe fn paint_bar(dc: HDC, rc: &RECT) {
         if a.hover == Hit::Close(i) {
             round_rect(dc, &cr, scale(6), C_CLOSE_HOVER, None);
         }
-        let title = if t.is_home() || !t.hwnd.is_null() { t.title.as_str() } else { "시작 중…" };
-        let title = if title.is_empty() { t.profile.as_ref().map_or("", Profile::label) } else { title };
+        let title = if t.is_home() || !t.hwnd().is_null() { t.title() } else { "시작 중…" };
+        let title = if t.panes.len() > 1 { format!("{title} (+{})", t.panes.len() - 1) } else { title.to_string() };
         let cy = (r.top + r.bottom) / 2;
         let dx = r.left + scale(12);
-        dot(dc, dx, cy, scale(6), profile_color(t.profile.as_ref()));
+        dot(dc, dx, cy, scale(6), profile_color(t.profile()));
         let tr = RECT { left: dx + scale(14), right: cr.left - scale(4), ..r };
         let color = if active { C_TEXT } else { C_DIM };
-        text(dc, a.fonts.ui, title, &tr, color, DT_LEFT | DT_END_ELLIPSIS | ONE_LINE);
+        text(dc, a.fonts.ui, &title, &tr, color, DT_LEFT | DT_END_ELLIPSIS | ONE_LINE);
         text(dc, a.fonts.icons, "\u{E8BB}", &cr, color, DT_CENTER | ONE_LINE);
     }
 
@@ -1663,6 +1873,12 @@ unsafe fn paint_bar(dc: HDC, rc: &RECT) {
         round_rect(dc, &cb, scale(8), C_HOVER, None);
     }
     text(dc, a.fonts.icons, "\u{E756}", &cb, if a.cmds_open { C_TEXT } else { C_DIM }, DT_CENTER | ONE_LINE);
+    let sb = split_btn_rect();
+    let split = a.tabs.get(a.active).map_or(0, |t| t.panes.len());
+    if a.hover == Hit::Split || split > 1 {
+        round_rect(dc, &sb, scale(8), C_HOVER, None);
+    }
+    text(dc, a.fonts.icons, "\u{E8A9}", &sb, if split > 1 { C_TEXT } else { C_DIM }, DT_CENTER | ONE_LINE);
 
     // caption buttons
     let glyph = if a.focused { C_TEXT } else { C_FAINT };
@@ -1903,9 +2119,22 @@ unsafe fn paint(hwnd: HWND) {
         Some(t) if t.is_home() => paint_home(mem, &body),
         Some(t) => {
             fill(mem, &body, C_TERM_BG);
-            if t.hwnd.is_null() {
-                let msg = format!("{} 시작 중…", t.title);
-                text(mem, a.fonts.ui, &msg, &body, C_DIM, DT_CENTER | ONE_LINE);
+            let rects = pane_rects(t.panes.len(), &term_area(), pane_gap());
+            if t.panes.len() > 1 {
+                // gaps between panes, the focused one outlined
+                fill(mem, &term_area(), C_BAR);
+                let g = pane_gap() / 2;
+                if let Some(r) = rects.get(t.focus) {
+                    let ring = RECT { left: r.left - g, top: r.top - g, right: r.right + g, bottom: r.bottom + g };
+                    fill(mem, &ring, C_ACCENT);
+                }
+            }
+            for (p, r) in t.panes.iter().zip(&rects) {
+                if p.hwnd.is_null() {
+                    fill(mem, r, C_TERM_BG);
+                    let msg = format!("{} 시작 중…", p.profile.label());
+                    text(mem, a.fonts.ui, &msg, r, C_DIM, DT_CENTER | ONE_LINE);
+                }
             }
             if cmds_visible() {
                 paint_cmds(mem);
@@ -2144,6 +2373,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 Hit::Plus => new_home_tab(),
                 Hit::Menu => show_menu(),
                 Hit::Cmds => toggle_commands(),
+                Hit::Split => split_menu(),
                 _ => {}
             }
             return 0;
@@ -2227,12 +2457,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             a.closing = true;
             a.tabs.retain(|t| !t.is_home());
-            for t in a.tabs.iter_mut() {
-                if t.hwnd.is_null() {
-                    t.kill_tree();
-                } else {
-                    PostMessageW(t.hwnd, WM_CLOSE, 0, 0);
-                }
+            for p in a.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()) {
+                p.close();
             }
             if a.tabs.is_empty() {
                 DestroyWindow(hwnd);

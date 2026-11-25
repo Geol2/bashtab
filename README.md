@@ -26,6 +26,10 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
   - 배포판 디스크(`ext4.vhdx`)의 소유자가 Administrators라서 `E_ACCESSDENIED`로 못 켜지는 경우(관리자 터미널에서 `wsl --import`/`--move` 했을 때)를 미리 감지해, UAC 확인 한 번으로 소유자를 현재 사용자로 바꿔 줌
 - 가벼운 시작 스크립트: `/etc/profile` 대신 외부 프로세스를 띄우지 않는 [`fast-rc.sh`](fast-rc.sh) 사용
   - Git Bash와 같은 프롬프트(git 브랜치 표시 포함), git 자동완성(첫 Tab에 로드), `~/.bashrc` 유지
+- **화면 나누기**: 한 탭을 2개(좌우) 또는 4개(2×2) 터미널로 나눠 보기
+  - 탭 바의 분할 버튼(명령 패널 버튼 왼쪽)이나 탭 우클릭 메뉴에서 "화면 2개로 / 4개로 나누기 / 화면 하나로"
+  - 새 창은 지금 창과 같은 셸, 같은 폴더(Git Bash)에서 시작. 선택된 창은 주황 테두리로 표시되고, 명령 패널·폴더 이동·다시 시작은 선택된 창에 적용
+  - 창에서 `exit`하면 그 창만 닫히고 나머지가 자리를 채움
 - **자주 쓰는 명령 패널**: 터미널 탭 오른쪽에 자주 쓰는 명령을 모아 두고 클릭하면 그 탭에서 바로 실행
   - 우클릭: 실행 / 입력만 하기(Enter 없이) / 목록 편집
   - "편집"을 누르면 메모장으로 `commands.txt`가 열리고, 저장하면 바로 반영. 한 줄에 하나씩 `[이름] 명령` 또는 `명령`
@@ -43,7 +47,7 @@ exe 하나(약 300KB)에 런타임도 필요 없습니다.
 | Ctrl+Shift+W / 휠클릭 / × | 탭 닫기 |
 | 명령 패널 클릭 / 우클릭 | 그 명령 실행 / 실행·입력만·편집 메뉴 |
 | 탭 끌기 | 탭 순서 바꾸기 |
-| 탭 우클릭 | 최근·즐겨찾는 폴더로 이동 / 다시 시작 / 강제 종료 / 탭 닫기 |
+| 탭 우클릭 | 최근·즐겨찾는 폴더로 이동 / 화면 나누기 / 다시 시작 / 강제 종료 / 탭 닫기 |
 | Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 탭 |
 | Alt+1~9 | N번째 탭 (9 = 마지막) |
 | Ctrl+Shift+C / Ctrl+Shift+V | 복사 / 붙여넣기 (mintty) |
@@ -84,7 +88,7 @@ cargo build --release   # target/release/bashtab.exe
 `v*` 태그를 push하면 GitHub Actions가 exe를 빌드해 Release에 올리고, Scoop manifest(`bucket/bashtab.json`)의 버전과 해시를 갱신합니다.
 
 ```bash
-git tag v0.5.7 && git push origin v0.5.7
+git tag v0.6.1 && git push origin v0.6.1
 ```
 
 `BASHTAB_LOG=1` 환경 변수를 주고 실행하면 `%LOCALAPPDATA%\bashtab\debug.log`에 디버그 로그를 남깁니다.
